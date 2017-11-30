@@ -14,9 +14,15 @@ except ImportError:
     from pipes import quote as _quote_args
 
 # Import Salt libs
-import salt.utils
+import salt.utils.args
 import salt.utils.decorators as decorators
+import salt.utils.files
+import salt.utils.path
+import salt.utils.platform
 from salt.utils.odict import OrderedDict
+
+# Import 3rd-party libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -34,21 +40,21 @@ def _check_vmadm():
     '''
     Looks to see if vmadm is present on the system
     '''
-    return salt.utils.which('vmadm')
+    return salt.utils.path.which('vmadm')
 
 
 def _check_zfs():
     '''
     Looks to see if zfs is present on the system
     '''
-    return salt.utils.which('zfs')
+    return salt.utils.path.which('zfs')
 
 
 def __virtual__():
     '''
     Provides vmadm on SmartOS
     '''
-    if salt.utils.is_smartos_globalzone() and _check_vmadm():
+    if salt.utils.platform.is_smartos_globalzone() and _check_vmadm():
         return __virtualname__
     return (
         False,
@@ -123,12 +129,18 @@ def _create_update_from_cfg(mode='create', uuid=None, vmcfg=None):
     '''
     ret = {}
     vmadm = _check_vmadm()
+
+    # write json file
+    vmadm_json_file = __salt__['temp.file'](prefix='vmadm-')
+    with salt.utils.files.fopen(vmadm_json_file, 'w') as vmadm_json:
+        vmadm_json.write(json.dumps(vmcfg))
+
     # vmadm validate create|update [-f <filename>]
-    cmd = 'echo {vmcfg} | {vmadm} validate {mode} {brand}'.format(
+    cmd = '{vmadm} validate {mode} {brand} -f {vmadm_json_file}'.format(
         vmadm=vmadm,
         mode=mode,
         brand=get(uuid)['brand'] if uuid is not None else '',
-        vmcfg=_quote_args(json.dumps(vmcfg))
+        vmadm_json_file=vmadm_json_file
     )
     res = __salt__['cmd.run_all'](cmd, python_shell=True)
     retcode = res['retcode']
@@ -141,11 +153,11 @@ def _create_update_from_cfg(mode='create', uuid=None, vmcfg=None):
                 ret['Error'] = res['stderr']
         return ret
     # vmadm create|update [-f <filename>]
-    cmd = 'echo {vmcfg} | {vmadm} {mode} {uuid}'.format(
+    cmd = '{vmadm} {mode} {uuid} -f {vmadm_json_file}'.format(
         vmadm=vmadm,
         mode=mode,
         uuid=uuid if uuid is not None else '',
-        vmcfg=_quote_args(json.dumps(vmcfg))
+        vmadm_json_file=vmadm_json_file
     )
     res = __salt__['cmd.run_all'](cmd, python_shell=True)
     retcode = res['retcode']
@@ -158,8 +170,13 @@ def _create_update_from_cfg(mode='create', uuid=None, vmcfg=None):
                 ret['Error'] = res['stderr']
         return ret
     else:
+        # cleanup json file (only when succesful to help troubleshooting)
+        salt.utils.files.safe_rm(vmadm_json_file)
+
+        # return uuid
         if res['stderr'].startswith('Successfully created VM'):
             return res['stderr'][24:]
+
     return True
 
 
@@ -289,7 +306,7 @@ def reboot(vm, force=False, key='uuid'):
     return True
 
 
-def list_vms(search=None, sort=None, order='uuid,type,ram,state,alias', keyed=False):
+def list_vms(search=None, sort=None, order='uuid,type,ram,state,alias', keyed=True):
     '''
     Return a list of VMs
 
@@ -395,10 +412,10 @@ def lookup(search=None, order=None, one=False):
 
 def sysrq(vm, action='nmi', key='uuid'):
     '''
-    Send non-maskable interupt to vm or capture a screenshot
+    Send non-maskable interrupt to vm or capture a screenshot
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     action : string
         nmi or screenshot -- Default: nmi
     key : string [uuid|alias|hostname]
@@ -479,7 +496,7 @@ def get(vm, key='uuid'):
     Output the JSON object describing a VM
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     key : string [uuid|alias|hostname]
         value type of 'vm' parameter
 
@@ -516,7 +533,7 @@ def info(vm, info_type='all', key='uuid'):
     Lookup info on running kvm
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     info_type : string [all|block|blockstats|chardev|cpus|kvm|pci|spice|version|vnc]
         info type to return
     key : string [uuid|alias|hostname]
@@ -561,7 +578,7 @@ def create_snapshot(vm, name, key='uuid'):
     Create snapshot of a vm
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     name : string
         snapshot name
             The snapname must be 64 characters or less
@@ -614,7 +631,7 @@ def delete_snapshot(vm, name, key='uuid'):
     Delete snapshot of a vm
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     name : string
         snapshot name
             The snapname must be 64 characters or less
@@ -664,7 +681,7 @@ def rollback_snapshot(vm, name, key='uuid'):
     Rollback snapshot of a vm
 
     vm : string
-        vm to be targetted
+        vm to be targeted
     name : string
         snapshot name
             The snapname must be 64 characters or less
@@ -771,8 +788,8 @@ def create(from_file=None, **kwargs):
     ret = {}
     # prepare vmcfg
     vmcfg = {}
-    kwargs = salt.utils.clean_kwargs(**kwargs)
-    for k, v in kwargs.iteritems():
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
+    for k, v in six.iteritems(kwargs):
         vmcfg[k] = v
 
     if from_file:
@@ -806,8 +823,8 @@ def update(vm, from_file=None, key='uuid', **kwargs):
     vmadm = _check_vmadm()
     # prepare vmcfg
     vmcfg = {}
-    kwargs = salt.utils.clean_kwargs(**kwargs)
-    for k, v in kwargs.iteritems():
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
+    for k, v in six.iteritems(kwargs):
         vmcfg[k] = v
 
     if key not in ['uuid', 'alias', 'hostname']:

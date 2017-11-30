@@ -5,6 +5,7 @@ File server pluggable modules and generic backend functions
 
 # Import python libs
 from __future__ import absolute_import
+import collections
 import errno
 import fnmatch
 import logging
@@ -14,11 +15,14 @@ import time
 
 # Import salt libs
 import salt.loader
-import salt.utils
+import salt.utils.files
 import salt.utils.locales
+import salt.utils.url
+import salt.utils.versions
+from salt.utils.args import get_function_argspec as _argspec
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 
 log = logging.getLogger(__name__)
@@ -121,10 +125,10 @@ def check_file_list_cache(opts, form, list_cache, w_lock):
                     age = time.time() - cache_stat.st_mtime
                 else:
                     # if filelist does not exists yet, mark it as expired
-                    age = opts.get('fileserver_list_cache_time', 30) + 1
-                if age < opts.get('fileserver_list_cache_time', 30):
+                    age = opts.get('fileserver_list_cache_time', 20) + 1
+                if age < opts.get('fileserver_list_cache_time', 20):
                     # Young enough! Load this sucker up!
-                    with salt.utils.fopen(list_cache, 'rb') as fp_:
+                    with salt.utils.files.fopen(list_cache, 'rb') as fp_:
                         log.trace('Returning file_lists cache data from '
                                   '{0}'.format(list_cache))
                         return serial.load(fp_).get(form, []), False, False
@@ -149,7 +153,7 @@ def write_file_list_cache(opts, data, list_cache, w_lock):
     backend to determine if the cache needs to be refreshed/written).
     '''
     serial = salt.payload.Serial(opts)
-    with salt.utils.fopen(list_cache, 'w+b') as fp_:
+    with salt.utils.files.fopen(list_cache, 'w+b') as fp_:
         fp_.write(serial.dumps(data))
         _unlock_cache(w_lock)
         log.trace('Lockfile {0} removed'.format(w_lock))
@@ -162,7 +166,7 @@ def check_env_cache(opts, env_cache):
     if not os.path.isfile(env_cache):
         return None
     try:
-        with salt.utils.fopen(env_cache, 'rb') as fp_:
+        with salt.utils.files.fopen(env_cache, 'rb') as fp_:
             log.trace('Returning env cache data from {0}'.format(env_cache))
             serial = salt.payload.Serial(opts)
             return serial.load(fp_)
@@ -171,7 +175,7 @@ def check_env_cache(opts, env_cache):
     return None
 
 
-def generate_mtime_map(path_map):
+def generate_mtime_map(opts, path_map):
     '''
     Generate a dict of filename -> mtime
     '''
@@ -179,6 +183,8 @@ def generate_mtime_map(path_map):
     for saltenv, path_list in six.iteritems(path_map):
         for path in path_list:
             for directory, dirnames, filenames in os.walk(path):
+                # Don't walk any directories that match file_ignore_regex or glob
+                dirnames[:] = [d for d in dirnames if not is_file_ignored(opts, d)]
                 for item in filenames:
                     try:
                         file_path = os.path.join(directory, item)
@@ -198,11 +204,15 @@ def diff_mtime_map(map1, map2):
     '''
     # check if the mtimes are the same
     if sorted(map1) != sorted(map2):
-        #log.debug('diff_mtime_map: the maps are different')
         return True
 
+    # map1 and map2 are guaranteed to have same keys,
+    # so compare mtimes
+    for filename, mtime in six.iteritems(map1):
+        if map2[filename] != mtime:
+            return True
+
     # we made it, that means we have no changes
-    #log.debug('diff_mtime_map: the maps are the same')
     return False
 
 
@@ -231,7 +241,7 @@ def reap_fileserver_cache_dir(cache_base, find_func):
                 try:
                     filename, _, hash_type = file_rel_path.rsplit('.', 2)
                 except ValueError:
-                    log.warn((
+                    log.warning((
                         'Found invalid hash file [{0}] when attempting to reap'
                         ' cache directory.'
                     ).format(file_))
@@ -272,7 +282,7 @@ def is_file_ignored(opts, fname):
     return False
 
 
-def clear_lock(clear_func, lock_type, remote=None):
+def clear_lock(clear_func, role, remote=None, lock_type='update'):
     '''
     Function to allow non-fileserver functions to clear update locks
 
@@ -282,7 +292,7 @@ def clear_lock(clear_func, lock_type, remote=None):
         lists, one containing messages describing successfully cleared locks,
         and one containing messages describing errors encountered.
 
-    lock_type
+    role
         What type of lock is being cleared (gitfs, git_pillar, etc.). Used
         solely for logging purposes.
 
@@ -290,14 +300,16 @@ def clear_lock(clear_func, lock_type, remote=None):
         Optional string which should be used in ``func`` to pattern match so
         that a subset of remotes can be targeted.
 
+    lock_type : update
+        Which type of lock to clear
 
     Returns the return data from ``clear_func``.
     '''
-    msg = 'Clearing update lock for {0} remotes'.format(lock_type)
+    msg = 'Clearing {0} lock for {1} remotes'.format(lock_type, role)
     if remote:
         msg += ' matching {0}'.format(remote)
     log.debug(msg)
-    return clear_func(remote=remote)
+    return clear_func(remote=remote, lock_type=lock_type)
 
 
 class Fileserver(object):
@@ -317,10 +329,18 @@ class Fileserver(object):
         if not back:
             back = self.opts['fileserver_backend']
         else:
-            try:
-                back = back.split(',')
-            except AttributeError:
-                back = six.text_type(back).split(',')
+            if not isinstance(back, list):
+                try:
+                    back = back.split(',')
+                except AttributeError:
+                    back = six.text_type(back).split(',')
+
+        if isinstance(back, collections.Sequence):
+            # The test suite uses an ImmutableList type (based on
+            # collections.Sequence) for lists, which breaks this function in
+            # the test suite. This normalizes the value from the opts into a
+            # list if it is based on collections.Sequence.
+            back = list(back)
 
         ret = []
         if not isinstance(back, list):
@@ -460,10 +480,14 @@ class Fileserver(object):
             ret = {}
         for fsb in back:
             fstr = '{0}.envs'.format(fsb)
+            kwargs = {'ignore_cache': True} \
+                if 'ignore_cache' in _argspec(self.servers[fstr]).args \
+                and self.opts['__role'] == 'minion' \
+                else {}
             if sources:
-                ret[fsb] = self.servers[fstr]()
+                ret[fsb] = self.servers[fstr](**kwargs)
             else:
-                ret.update(self.servers[fstr]())
+                ret.update(self.servers[fstr](**kwargs))
         if sources:
             return ret
         return list(ret)
@@ -477,6 +501,28 @@ class Fileserver(object):
             fstr = '{0}.init'.format(fsb)
             if fstr in self.servers:
                 self.servers[fstr]()
+
+    def _find_file(self, load):
+        '''
+        Convenience function for calls made using the RemoteClient
+        '''
+        path = load.get('path')
+        if not path:
+            return {'path': '',
+                    'rel': ''}
+        tgt_env = load.get('saltenv', 'base')
+        return self.find_file(path, tgt_env)
+
+    def file_find(self, load):
+        '''
+        Convenience function for calls made using the LocalClient
+        '''
+        path = load.get('path')
+        if not path:
+            return {'path': '',
+                    'rel': ''}
+        tgt_env = load.get('saltenv', 'base')
+        return self.find_file(path, tgt_env)
 
     def find_file(self, path, saltenv, back=None):
         '''
@@ -505,16 +551,13 @@ class Fileserver(object):
                         continue
                     args = comp.split('=', 1)
                     kwargs[args[0]] = args[1]
+
         if 'env' in kwargs:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            saltenv = kwargs.pop('env')
-        elif 'saltenv' in kwargs:
+            # "env" is not supported; Use "saltenv".
+            kwargs.pop('env')
+        if 'saltenv' in kwargs:
             saltenv = kwargs.pop('saltenv')
+
         if not isinstance(saltenv, six.string_types):
             saltenv = six.text_type(saltenv)
 
@@ -533,14 +576,10 @@ class Fileserver(object):
         '''
         ret = {'data': '',
                'dest': ''}
+
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         if 'path' not in load or 'loc' not in load or 'saltenv' not in load:
             return ret
@@ -555,45 +594,131 @@ class Fileserver(object):
             return self.servers[fstr](load, fnd)
         return ret
 
-    def file_hash(self, load):
+    def __file_hash_and_stat(self, load):
         '''
-        Return the hash of a given file
+        Common code for hashing and stating files
         '''
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         if 'path' not in load or 'saltenv' not in load:
-            return ''
+            return '', None
         if not isinstance(load['saltenv'], six.string_types):
             load['saltenv'] = six.text_type(load['saltenv'])
 
         fnd = self.find_file(salt.utils.locales.sdecode(load['path']),
                 load['saltenv'])
         if not fnd.get('back'):
-            return ''
+            return '', None
+        stat_result = fnd.get('stat', None)
         fstr = '{0}.file_hash'.format(fnd['back'])
         if fstr in self.servers:
-            return self.servers[fstr](load, fnd)
-        return ''
+            return self.servers[fstr](load, fnd), stat_result
+        return '', None
+
+    def file_hash(self, load):
+        '''
+        Return the hash of a given file
+        '''
+        try:
+            return self.__file_hash_and_stat(load)[0]
+        except (IndexError, TypeError):
+            return ''
+
+    def file_hash_and_stat(self, load):
+        '''
+        Return the hash and stat result of a given file
+        '''
+        try:
+            return self.__file_hash_and_stat(load)
+        except (IndexError, TypeError):
+            return '', None
+
+    def clear_file_list_cache(self, load):
+        '''
+        Deletes the file_lists cache files
+        '''
+        if 'env' in load:
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
+
+        saltenv = load.get('saltenv', [])
+        if saltenv is not None:
+            if not isinstance(saltenv, list):
+                try:
+                    saltenv = [x.strip() for x in saltenv.split(',')]
+                except AttributeError:
+                    saltenv = [x.strip() for x in str(saltenv).split(',')]
+
+            for idx, val in enumerate(saltenv):
+                if not isinstance(val, six.string_types):
+                    saltenv[idx] = six.text_type(val)
+
+        ret = {}
+        fsb = self._gen_back(load.pop('fsbackend', None))
+        list_cachedir = os.path.join(self.opts['cachedir'], 'file_lists')
+        try:
+            file_list_backends = os.listdir(list_cachedir)
+        except OSError as exc:
+            if exc.errno == errno.ENOENT:
+                log.debug('No file list caches found')
+                return {}
+            else:
+                log.error(
+                    'Failed to get list of saltenvs for which the master has '
+                    'cached file lists: %s', exc
+                )
+
+        for back in file_list_backends:
+            # Account for the fact that the file_list cache directory for gitfs
+            # is 'git', hgfs is 'hg', etc.
+            back_virtualname = re.sub('fs$', '', back)
+            try:
+                cache_files = os.listdir(os.path.join(list_cachedir, back))
+            except OSError as exc:
+                log.error(
+                    'Failed to find file list caches for saltenv \'%s\': %s',
+                    back, exc
+                )
+                continue
+            for cache_file in cache_files:
+                try:
+                    cache_saltenv, extension = cache_file.rsplit('.', 1)
+                except ValueError:
+                    # Filename has no dot in it. Not a cache file, ignore.
+                    continue
+                if extension != 'p':
+                    # Filename does not end in ".p". Not a cache file, ignore.
+                    continue
+                elif back_virtualname not in fsb or \
+                        (saltenv is not None and cache_saltenv not in saltenv):
+                    log.debug(
+                        'Skipping %s file list cache for saltenv \'%s\'',
+                        back, cache_saltenv
+                    )
+                    continue
+                try:
+                    os.remove(os.path.join(list_cachedir, back, cache_file))
+                except OSError as exc:
+                    if exc.errno != errno.ENOENT:
+                        log.error('Failed to remove %s: %s',
+                                  exc.filename, exc.strerror)
+                else:
+                    ret.setdefault(back, []).append(cache_saltenv)
+                    log.debug(
+                        'Removed %s file list cache for saltenv \'%s\'',
+                        cache_saltenv, back
+                    )
+        return ret
 
     def file_list(self, load):
         '''
         Return a list of files from the dominant environment
         '''
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         ret = set()
         if 'saltenv' not in load:
@@ -618,13 +743,8 @@ class Fileserver(object):
         List all emptydirs in the given environment
         '''
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         ret = set()
         if 'saltenv' not in load:
@@ -649,13 +769,8 @@ class Fileserver(object):
         List all directories in the given environment
         '''
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         ret = set()
         if 'saltenv' not in load:
@@ -680,13 +795,8 @@ class Fileserver(object):
         Return a list of symlinked files and dirs
         '''
         if 'env' in load:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            load['saltenv'] = load.pop('env')
+            # "env" is not supported; Use "saltenv".
+            load.pop('env')
 
         ret = {}
         if 'saltenv' not in load:
@@ -721,10 +831,15 @@ class FSChan(object):
         self.kwargs = kwargs
         self.fs = Fileserver(self.opts)
         self.fs.init()
-        self.fs.update()
-        self.cmd_stub = {'ext_nodes': {}}
+        if self.opts.get('file_client', 'remote') == 'local':
+            if '__fs_update' not in self.opts:
+                self.fs.update()
+                self.opts['__fs_update'] = True
+        else:
+            self.fs.update()
+        self.cmd_stub = {'master_tops': {}}
 
-    def send(self, load, tries=None, timeout=None):
+    def send(self, load, tries=None, timeout=None, raw=False):  # pylint: disable=unused-argument
         '''
         Emulate the channel send method, the tries and timeout are not used
         '''

@@ -31,12 +31,15 @@ the instance.
 from __future__ import absolute_import
 import re
 import logging
-from distutils.version import StrictVersion  # pylint: disable=no-name-in-module
+
+# Import salt libs
+from salt.utils.versions import StrictVersion as _StrictVersion
 
 # Import AWS Boto libs
 try:
     import boto.ec2
     import boto.utils
+    import boto.exception
     HAS_BOTO = True
 except ImportError:
     HAS_BOTO = False
@@ -52,8 +55,8 @@ def __virtual__():
     '''
     if not HAS_BOTO:
         return False
-    boto_version = StrictVersion(boto.__version__)
-    required_boto_version = StrictVersion('2.8.0')
+    boto_version = _StrictVersion(boto.__version__)
+    required_boto_version = _StrictVersion('2.8.0')
     if boto_version < required_boto_version:
         log.error("%s: installed boto version %s < %s, can't retrieve instance data",
                 __name__, boto_version, required_boto_version)
@@ -123,7 +126,7 @@ def ext_pillar(minion_id,
 
     try:
         conn = boto.ec2.connect_to_region(region)
-    except boto.exception as e:
+    except boto.exception as e:  # pylint: disable=E0712
         log.error("%s: invalid AWS credentials.", __name__)
         return None
 

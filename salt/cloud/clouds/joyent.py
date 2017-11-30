@@ -19,7 +19,7 @@ Set up the cloud configuration at ``/etc/salt/cloud.providers`` or
       # The location of the ssh private key that can log into the new VM
       private_key: /root/mykey.pem
       # The name of the private key
-      private_key: mykey
+      keyname: mykey
 
 When creating your profiles for the joyent cloud, add the location attribute to
 the profile, this will automatically get picked up when performing tasks
@@ -29,7 +29,7 @@ associated with that vm. An example profile might look like:
 
       joyent_512:
         provider: my-joyent-config
-        size: Extra Small 512 MB
+        size: g4-highcpu-512M
         image: centos-6
         location: us-east-1
 
@@ -65,12 +65,12 @@ from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 
 # Import salt libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import http_client  # pylint: disable=import-error,no-name-in-module
-import salt.utils.http
 import salt.utils.cloud
+import salt.utils.files
+import salt.utils.http
 import salt.config as config
-from salt.utils.cloud import is_public_ip
 from salt.cloud.libcloudfuncs import node_state
 from salt.exceptions import (
     SaltCloudSystemExit,
@@ -178,10 +178,11 @@ def query_instance(vm_=None, call=None):
             'The query_instance action must be called with -a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'querying instance',
         'salt/cloud/{0}/querying'.format(vm_['name']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -195,8 +196,8 @@ def query_instance(vm_=None, call=None):
             return False
 
         if isinstance(data, dict) and 'error' in data:
-            log.warn(
-                'There was an error in the query {0}'.format(data['error'])  # pylint: disable=E1126
+            log.warning(
+                'There was an error in the query {0}'.format(data.get('error'))
             )
             # Trigger a failure in the wait for IP function
             return False
@@ -204,7 +205,9 @@ def query_instance(vm_=None, call=None):
         log.debug('Returned query data: {0}'.format(data))
 
         if 'primaryIp' in data[1]:
-            return data[1]['primaryIp']
+            # Wait for SSH to be fully configured on the remote side
+            if data[1]['state'] == 'running':
+                return data[1]['primaryIp']
         return None
 
     try:
@@ -219,9 +222,8 @@ def query_instance(vm_=None, call=None):
         )
     except (SaltCloudExecutionTimeout, SaltCloudExecutionFailure) as exc:
         try:
-            # It might be already up, let's destroy it!
+            # destroy(vm_['name'])
             pass
-            #destroy(vm_['name'])
         except SaltCloudSystemExit:
             pass
         finally:
@@ -244,29 +246,22 @@ def create(vm_):
         # Check for required profile parameters before sending any API calls.
         if vm_['profile'] and config.is_profile_configured(__opts__,
                                                            __active_provider_name__ or 'joyent',
-                                                           vm_['profile']) is False:
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
-
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in vm_:
-        vm_['driver'] = vm_.pop('provider')
 
     key_filename = config.get_cloud_config_value(
         'private_key', vm_, __opts__, search_global=False, default=None
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('creating', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -284,29 +279,26 @@ def create(vm_):
         'image': get_image(vm_),
         'size': get_size(vm_),
         'location': vm_.get('location', DEFAULT_LOCATION)
-
     }
+    # Let's not assign a default here; only assign a network value if
+    # one is explicitly configured
+    if 'networks' in vm_:
+        kwargs['networks'] = vm_.get('networks')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        {'kwargs': kwargs},
+        args={
+            'kwargs': __utils__['cloud.filter_event']('requesting', kwargs, list(kwargs)),
+        },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
-    try:
-        data = create_node(**kwargs)
-    except Exception as exc:
-        log.error(
-            'Error creating {0} on JOYENT\n\n'
-            'The following exception was thrown when trying to '
-            'run the initial deployment: \n{1}'.format(
-                vm_['name'], str(exc)
-            ),
-            # Show the traceback if the debug logging level is enabled
-            exc_info_on_loglevel=logging.DEBUG
-        )
+    data = create_node(**kwargs)
+    if data == {}:
+        log.error('Error creating {0} on JOYENT'.format(vm_['name']))
         return False
 
     query_instance(vm_)
@@ -315,17 +307,14 @@ def create(vm_):
     vm_['key_filename'] = key_filename
     vm_['ssh_host'] = data[1]['primaryIp']
 
-    salt.utils.cloud.bootstrap(vm_, __opts__)
+    __utils__['cloud.bootstrap'](vm_, __opts__)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('created', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -340,21 +329,43 @@ def create_node(**kwargs):
     size = kwargs['size']
     image = kwargs['image']
     location = kwargs['location']
+    networks = kwargs.get('networks')
+    tag = kwargs.get('tag')
+    locality = kwargs.get('locality')
+    metadata = kwargs.get('metadata')
+    firewall_enabled = kwargs.get('firewall_enabled')
 
-    data = json.dumps({
+    create_data = {
         'name': name,
         'package': size['name'],
-        'image': image['name']
-    })
+        'image': image['name'],
+    }
+    if networks is not None:
+        create_data['networks'] = networks
 
-    try:
-        ret = query(command='/my/machines', data=data, method='POST',
-                     location=location)
-        if ret[0] in VALID_RESPONSE_CODES:
-            return ret[1]
-    except Exception as exc:
+    if locality is not None:
+        create_data['locality'] = locality
+
+    if metadata is not None:
+        for key, value in six.iteritems(metadata):
+            create_data['metadata.{0}'.format(key)] = value
+
+    if tag is not None:
+        for key, value in six.iteritems(tag):
+            create_data['tag.{0}'.format(key)] = value
+
+    if firewall_enabled is not None:
+        create_data['firewall_enabled'] = firewall_enabled
+
+    data = json.dumps(create_data)
+
+    ret = query(command='/my/machines', data=data, method='POST',
+                location=location)
+    if ret[0] in VALID_RESPONSE_CODES:
+        return ret[1]
+    else:
         log.error(
-            'Failed to create node {0}: {1}'.format(name, exc)
+            'Failed to create node {0}: {1}'.format(name, ret[1])
         )
 
     return {}
@@ -382,28 +393,30 @@ def destroy(name, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
     node = get_node(name)
     ret = query(command='my/machines/{0}'.format(node['id']),
-                 location=node['location'], method='DELETE')
+                location=node['location'], method='DELETE')
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     return ret[0] in VALID_RESPONSE_CODES
 
@@ -496,7 +509,7 @@ def take_action(name=None, call=None, command=None, data=None, method='GET',
     try:
 
         ret = query(command=command, data=data, method=method,
-                     location=location)
+                    location=location)
         log.info('Success {0} for node {1}'.format(caller, name))
     except Exception as exc:
         if 'InvalidState' in str(exc):
@@ -680,7 +693,7 @@ def reformat_node(item=None, full=False):
     item['public_ips'] = []
     if 'ips' in item:
         for ip in item['ips']:
-            if is_public_ip(ip):
+            if salt.utils.cloud.is_public_ip(ip):
                 item['public_ips'].append(ip)
             else:
                 item['private_ips'].append(ip)
@@ -725,20 +738,24 @@ def list_nodes(full=False, call=None):
     if POLL_ALL_LOCATIONS:
         for location in JOYENT_LOCATIONS:
             result = query(command='my/machines', location=location,
-                            method='GET')
-            nodes = result[1]
-            for node in nodes:
-                if 'name' in node:
-                    node['location'] = location
-                    ret[node['name']] = reformat_node(item=node, full=full)
+                           method='GET')
+            if result[0] in VALID_RESPONSE_CODES:
+                nodes = result[1]
+                for node in nodes:
+                    if 'name' in node:
+                        node['location'] = location
+                        ret[node['name']] = reformat_node(item=node, full=full)
+            else:
+                log.error('Invalid response when listing Joyent nodes: {0}'.format(result[1]))
 
     else:
-        result = query(command='my/machines', location=DEFAULT_LOCATION,
-                        method='GET')
+        location = get_location()
+        result = query(command='my/machines', location=location,
+                       method='GET')
         nodes = result[1]
         for node in nodes:
             if 'name' in node:
-                node['location'] = DEFAULT_LOCATION
+                node['location'] = location
                 ret[node['name']] = reformat_node(item=node, full=full)
     return ret
 
@@ -935,7 +952,7 @@ def import_key(kwargs=None, call=None):
         ))
         return False
 
-    with salt.utils.fopen(kwargs['keyfile'], 'r') as fp_:
+    with salt.utils.files.fopen(kwargs['keyfile'], 'r') as fp_:
         kwargs['key'] = fp_.read()
 
     send_data = {'name': kwargs['keyname'], 'key': kwargs['key']}
@@ -1002,6 +1019,9 @@ def query(action=None,
         'user', get_configured_provider(), __opts__, search_global=False
     )
 
+    if not user:
+        log.error('username is required for Joyent API requests. Please set one in your provider configuration')
+
     password = config.get_cloud_config_value(
         'password', get_configured_provider(), __opts__,
         search_global=False
@@ -1017,10 +1037,16 @@ def query(action=None,
         search_global=False, default=True
     )
 
+    if not ssh_keyfile:
+        log.error('ssh_keyfile is required for Joyent API requests.  Please set one in your provider configuration')
+
     ssh_keyname = config.get_cloud_config_value(
         'keyname', get_configured_provider(), __opts__,
         search_global=False, default=True
     )
+
+    if not ssh_keyname:
+        log.error('ssh_keyname is required for Joyent API requests.  Please set one in your provider configuration')
 
     if not location:
         location = get_location()
@@ -1040,15 +1066,18 @@ def query(action=None,
 
     log.debug('User: \'{0}\' on PATH: {1}'.format(user, path))
 
+    if (not user) or (not ssh_keyfile) or (not ssh_keyname) or (not location):
+        return None
+
     timenow = datetime.datetime.utcnow()
     timestamp = timenow.strftime('%a, %d %b %Y %H:%M:%S %Z').strip()
-    with salt.utils.fopen(ssh_keyfile, 'r') as kh_:
-        rsa_key = RSA.importKey(kh_)
+    with salt.utils.files.fopen(ssh_keyfile, 'r') as kh_:
+        rsa_key = RSA.importKey(kh_.read())
     rsa_ = PKCS1_v1_5.new(rsa_key)
     hash_ = SHA256.new()
-    hash_.update(timestamp)
+    hash_.update(timestamp.encode(__salt_system_encoding__))
     signed = base64.b64encode(rsa_.sign(hash_))
-    keyid = '/{0}/keys/{1}'.format(user, ssh_keyname)
+    keyid = '/{0}/keys/{1}'.format(user.split('/')[0], ssh_keyname)
 
     headers = {
         'Content-Type': 'application/json',
@@ -1057,7 +1086,7 @@ def query(action=None,
         'Date': timestamp,
         'Authorization': 'Signature keyId="{0}",algorithm="rsa-sha256" {1}'.format(
             keyid,
-            signed
+            signed.decode(__salt_system_encoding__)
         ),
     }
 
@@ -1087,6 +1116,9 @@ def query(action=None,
             result['status']
         )
     )
+    if 'headers' not in result:
+        return [result['status'], result['error']]
+
     if 'Content-Length' in result['headers']:
         content = result['text']
         return_content = yaml.safe_load(content)

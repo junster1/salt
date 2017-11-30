@@ -1,16 +1,16 @@
-The MacOS X (Maverick) Developer Step By Step Guide To Salt Installation
-========================================================================
+.. _tutorial-macos-walk-through:
+
+======================================================================
+The macOS (Maverick) Developer Step By Step Guide To Salt Installation
+======================================================================
 
 This document provides a step-by-step guide to installing a Salt cluster
-consisting of  one master, and one minion running on a local VM hosted on Mac OS X.
-
+consisting of  one master, and one minion running on a local VM hosted on macOS.
 
 .. note::
     This guide is aimed at developers who wish to run Salt in a virtual machine.
     The official (Linux) walkthrough can be found
     `here <http://docs.saltstack.com/topics/tutorials/walkthrough.html>`_.
-
-
 
 The 5 Cent Salt Intro
 ---------------------
@@ -60,18 +60,19 @@ Here's a brief overview of a Salt cluster:
     that.
 
 
-
 Before Digging In, The Architecture Of The Salt Cluster
 -------------------------------------------------------
 
 Salt Master
 +++++++++++
+
 The "Salt master" server is going to be the Mac OS machine, directly. Commands
 will be run from a terminal app, so Salt will need to be installed on the Mac.
 This is going to be more convenient for toying around with configuration files.
 
 Salt Minion
 +++++++++++
+
 We'll only have one "Salt minion" server. It is going to be running on a
 Virtual Machine running on the Mac, using VirtualBox. It will run an Ubuntu
 distribution.
@@ -82,12 +83,12 @@ Step 1 - Configuring The Salt Master On Your Mac
 `official documentation
 <http://docs.saltstack.com/topics/installation/osx.html>`_
 
-Because Salt has a lot of dependencies that are not built in Mac OS X, we will
-use Homebrew to install Salt. Homebrew is a package manager for Mac, it's
-great, use it (for this tutorial at least!). Some people spend a lot of time
-installing libs by hand to better understand dependencies, and then realize how
-useful a package manager is once they're configuring a brand new machine and
-have to do it all over again. It also lets you *uninstall* things easily.
+Because Salt has a lot of dependencies that are not built in macOS, we will use
+Homebrew to install Salt. Homebrew is a package manager for Mac, it's great, use
+it (for this tutorial at least!). Some people spend a lot of time installing
+libs by hand to better understand dependencies, and then realize how useful a
+package manager is once they're configuring a brand new machine and have to do
+it all over again. It also lets you *uninstall* things easily.
 
 .. note::
 
@@ -106,7 +107,7 @@ have to do it all over again. It also lets you *uninstall* things easily.
 
 .. tip::
 
-    Use the keyboard shortcut ``cmd + shift + period`` in the "open" Mac OS X
+    Use the keyboard shortcut ``cmd + shift + period`` in the "open" macOS
     dialog box to display hidden files and folders, such as .profile.
 
 
@@ -166,7 +167,7 @@ http://docs.saltstack.com/ref/configuration/examples.html#configuration-examples
     ``/etc/salt/master`` is a file, not a folder.
 
 Salt Master configuration changes. The Salt master needs a few customization
-to be able to run on Mac OS X:
+to be able to run on macOS:
 
 .. code-block:: bash
 
@@ -191,6 +192,7 @@ There should be no errors when running the above command.
 
 Now that the master is set, let's configure a minion on a VM.
 
+
 Step 2 - Configuring The Minion VM
 ==================================
 
@@ -213,7 +215,7 @@ Install VirtualBox
 ------------------
 
 Go get it here: https://www.virtualBox.org/wiki/Downloads (click on VirtualBox
-for OS X hosts => x86/amd64)
+for macOS hosts => x86/amd64)
 
 Install Vagrant
 ---------------
@@ -314,12 +316,13 @@ following:
 
 .. note::
 
-    That ip is the ip of your VM host (the Mac OS X OS). The number is a
+    That ip is the ip of your VM host (the macOS host). The number is a
     VirtualBox default and is displayed in the log after the Vagrant ssh
     command. We'll use that IP to tell the minion where the Salt master is.
     Once you're done, end the ssh session by typing ``exit``.
 
 It's now time to connect the VM to the salt master
+
 
 Step 3 - Connecting Master and Minion
 =====================================
@@ -366,7 +369,6 @@ Then copy the .pub file into the list of accepted minions:
 
     sudo cp minion1.pub /etc/salt/pki/master/minions/minion1
 
-
 Modify Vagrantfile to Use Salt Provisioner
 ------------------------------------------
 
@@ -412,6 +414,7 @@ following:
 You should see your minion answering the ping. It's now time to do some
 configuration.
 
+
 Step 4 - Configure Services to Install On the Minion
 ====================================================
 
@@ -428,12 +431,12 @@ error saying the site cannot be reached.
 Initialize the top.sls file
 ---------------------------
 
-System configuration is done in the /srv/salt/top.sls file (and
-subfiles/folders), and then applied by running the ``state.highstate``
-command to have the Salt master give orders so minions will update their
-instructions and run the associated commands.
+System configuration is done in ``/srv/salt/top.sls`` (and subfiles/folders),
+and then applied by running the :py:func:`state.apply
+<salt.modules.state.apply_>` function to have the Salt master order its minions
+to update their instructions and run the associated commands.
 
-First Create an empty file on your Salt master (Mac OS X machine):
+First Create an empty file on your Salt master (macOS machine):
 
 .. code-block:: bash
 
@@ -444,10 +447,10 @@ an error is reported:
 
 .. code-block:: bash
 
-    sudo salt 'minion1' state.highstate
+    sudo salt 'minion1' state.apply
 
-Should return an error stating:
-"No Top file or external nodes data matches found".
+This should return an error stating: **No Top file or external nodes data
+matches found**.
 
 Create The Nginx Configuration
 ------------------------------
@@ -456,8 +459,8 @@ Now is finally the time to enter the real meat of our server's configuration.
 For this tutorial our minion will be treated as a web server that needs to
 have Nginx installed.
 
-Insert the following lines into the ``/srv/salt/top.sls`` file (which should
-current be empty).
+Insert the following lines into ``/srv/salt/top.sls`` (which should current be
+empty).
 
 .. code-block:: yaml
 
@@ -465,7 +468,7 @@ current be empty).
       'minion1':
         - bin.nginx
 
-Now create a ``/srv/salt/bin/nginx.sls`` file containing the following:
+Now create ``/srv/salt/bin/nginx.sls`` containing the following:
 
 .. code-block:: yaml
 
@@ -479,11 +482,12 @@ Now create a ``/srv/salt/bin/nginx.sls`` file containing the following:
 Check Minion State
 ------------------
 
-Finally run the state.highstate command again:
+Finally, run the :py:func:`state.apply <salt.modules.state.apply_>` function
+again:
 
 .. code-block:: bash
 
-    sudo salt 'minion1' state.highstate
+    sudo salt 'minion1' state.apply
 
 You should see a log showing that the Nginx package has been installed
 and the service configured. To prove it, open your browser and navigate to

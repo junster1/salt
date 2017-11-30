@@ -56,7 +56,7 @@ To use the alternative configuration, append '--return_config alternative' to th
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -71,8 +71,7 @@ import logging
 # Import Salt libs
 import salt.utils.jid
 import salt.returners
-import salt.ext.six as six
-
+from salt.ext import six
 
 # Import third party libs
 try:
@@ -91,7 +90,7 @@ __virtualname__ = 'mongo'
 
 def __virtual__():
     if not HAS_PYMONGO:
-        return False
+        return False, 'Could not import mongo returner; pymongo is not installed.'
     return __virtualname__
 
 
@@ -157,10 +156,12 @@ def _get_conn(ret):
             mdb.saltReturns.create_index('minion')
             mdb.saltReturns.create_index('jid')
             mdb.jobs.create_index('jid')
+            mdb.events.create_index('tag')
         else:
             mdb.saltReturns.ensure_index('minion')
             mdb.saltReturns.ensure_index('jid')
             mdb.jobs.ensure_index('jid')
+            mdb.events.ensure_index('tag')
 
     return conn, mdb
 
@@ -199,16 +200,61 @@ def returner(ret):
         mdb.saltReturns.insert(sdata.copy())
 
 
-def save_load(jid, load):
+def _safe_copy(dat):
+    ''' mongodb doesn't allow '.' in keys, but does allow unicode equivs.
+        Apparently the docs suggest using escaped unicode full-width
+        encodings.  *sigh*
+
+            \\  -->  \\\\
+            $  -->  \\\\u0024
+            .  -->  \\\\u002e
+
+        Personally, I prefer URL encodings,
+
+        \\  -->  %5c
+        $  -->  %24
+        .  -->  %2e
+
+
+        Which means also escaping '%':
+
+        % -> %25
+    '''
+
+    if isinstance(dat, dict):
+        ret = {}
+        for k in dat:
+            r = k.replace('%', '%25').replace('\\', '%5c').replace('$', '%24').replace('.', '%2e')
+            if r != k:
+                log.debug('converting dict key from {0} to {1} for mongodb'.format(k, r))
+            ret[r] = _safe_copy(dat[k])
+        return ret
+
+    if isinstance(dat, (list, tuple)):
+        return [_safe_copy(i) for i in dat]
+
+    return dat
+
+
+def save_load(jid, load, minions=None):
     '''
     Save the load for a given job id
     '''
     conn, mdb = _get_conn(ret=None)
+    to_save = _safe_copy(load)
+
     if float(version) > 2.3:
         #using .copy() to ensure original data for load is unchanged
-        mdb.jobs.insert_one(load.copy())
+        mdb.jobs.insert_one(to_save)
     else:
-        mdb.jobs.insert(load.copy())
+        mdb.jobs.insert(to_save)
+
+
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
 
 
 def get_load(jid):
@@ -216,8 +262,7 @@ def get_load(jid):
     Return the load associated with a given job id
     '''
     conn, mdb = _get_conn(ret=None)
-    ret = mdb.jobs.find_one({'jid': jid}, {'_id': 0})
-    return ret['load']
+    return mdb.jobs.find_one({'jid': jid}, {'_id': 0})
 
 
 def get_jid(jid):
@@ -277,4 +322,22 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''
-    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid(__opts__)
+
+
+def event_return(events):
+    '''
+    Return events to Mongodb server
+    '''
+    conn, mdb = _get_conn(ret=None)
+
+    if isinstance(events, list):
+        events = events[0]
+
+    if isinstance(events, dict):
+        log.debug(events)
+
+        if float(version) > 2.3:
+            mdb.events.insert_one(events.copy())
+        else:
+            mdb.events.insert(events.copy())

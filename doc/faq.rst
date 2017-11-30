@@ -12,17 +12,30 @@ No. Salt is 100% committed to being open-source, including all of our APIs. It
 is developed under the `Apache 2.0 license`_, allowing it to be used in both
 open and proprietary projects.
 
+To expand on this a little:
+
+There is much argument over the actual definition of "open core".  From our standpoint, Salt is open source because
+
+1. It is a standalone product that anyone is free to use.
+2. It is developed in the open with contributions accepted from the community for the good of the project.
+3. There are no features of Salt itself that are restricted to separate proprietary products distributed by SaltStack, Inc.
+4. Because of our Apache 2.0 license, Salt can be used as the foundation for a project or even a proprietary tool.
+5. Our APIs are open and documented (any lack of documentation is an oversight as opposed to an intentional decision by SaltStack the company) and available for use by anyone.
+
+SaltStack the company does make proprietary products which use Salt and its libraries, like company is free to do, but we do so via the APIs, NOT by forking Salt and creating a different, closed-source version of it for paying customers.
+
+
 .. _`Apache 2.0 license`: http://www.apache.org/licenses/LICENSE-2.0.html
 
 I think I found a bug! What should I do?
------------------------------------------
+----------------------------------------
 
 The salt-users mailing list as well as the salt IRC channel can both be helpful
 resources to confirm if others are seeing the issue and to assist with
 immediate debugging.
 
 To report a bug to the Salt project, please follow the instructions in
-:doc:`reporting a bug </topics/development/reporting_bugs>`.
+:ref:`reporting a bug <reporting-bugs>`.
 
 
 What ports should I open on my firewall?
@@ -30,7 +43,7 @@ What ports should I open on my firewall?
 
 Minions need to be able to connect to the Master on TCP ports 4505 and 4506.
 Minions do not need any inbound ports open. More detailed information on
-firewall settings can be found :doc:`here </topics/tutorials/firewall>`.
+firewall settings can be found :ref:`here <firewall>`.
 
 I'm seeing weird behavior (including but not limited to packages not installing their users properly)
 -----------------------------------------------------------------------------------------------------
@@ -38,8 +51,8 @@ I'm seeing weird behavior (including but not limited to packages not installing 
 This is often caused by SELinux.  Try disabling SELinux or putting it in
 permissive mode and see if the weird behavior goes away.
 
-My script runs every time I run a *state.highstate*. Why?
----------------------------------------------------------
+My script runs every time I run a *state.apply*. Why?
+-----------------------------------------------------
 
 You are probably using :mod:`cmd.run <salt.states.cmd.run>` rather than
 :mod:`cmd.wait <salt.states.cmd.wait>`. A :mod:`cmd.wait
@@ -134,20 +147,33 @@ should be opened on our tracker_, with the following information:
 Why aren't my custom modules/states/etc. available on my Minions?
 -----------------------------------------------------------------
 
-Custom modules are only synced to Minions when :mod:`state.highstate
-<salt.modules.state.highstate>`, :mod:`saltutil.sync_modules
-<salt.modules.saltutil.sync_modules>`, or :mod:`saltutil.sync_all
-<salt.modules.saltutil.sync_all>` is run. Similarly, custom states are only
-synced to Minions when :mod:`state.highstate <salt.modules.state.highstate>`,
+Custom modules are synced to Minions when
+:mod:`saltutil.sync_modules <salt.modules.saltutil.sync_modules>`,
+or :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` is run.
+Custom modules are also synced by :mod:`state.apply` when run without
+any arguments.
+
+
+Similarly, custom states are synced to Minions
+when :mod:`state.apply <salt.modules.state.apply_>`,
 :mod:`saltutil.sync_states <salt.modules.saltutil.sync_states>`, or
 :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>` is run.
+
+Custom states are also synced by :mod:`state.apply<salt.modules.state.apply_>`
+when run without any arguments.
 
 Other custom types (renderers, outputters, etc.) have similar behavior, see the
 documentation for the :mod:`saltutil <salt.modules.saltutil>` module for more
 information.
 
+:ref:`This reactor example <minion-start-reactor>` can be used to automatically
+sync custom types when the minion connects to the master, to help with this
+chicken-and-egg issue.
+
+
 Module ``X`` isn't available, even though the shell command it uses is installed. Why?
 --------------------------------------------------------------------------------------
+
 This is most likely a PATH issue. Did you custom-compile the software which the
 module requires? RHEL/CentOS/etc. in particular override the root user's path
 in ``/etc/init.d/functions``, setting it to ``/sbin:/usr/sbin:/bin:/usr/bin``,
@@ -163,6 +189,8 @@ PATH using a :mod:`file.symlink <salt.states.file.symlink>` state.
     /usr/bin/foo:
       file.symlink:
         - target: /usr/local/bin/foo
+
+.. _which-version:
 
 Can I run different versions of Salt on my Master and Minion?
 -------------------------------------------------------------
@@ -187,7 +215,7 @@ Does Salt support backing up managed files?
 -------------------------------------------
 
 Yes. Salt provides an easy to use addition to your file.managed states that
-allow you to back up files via :doc:`backup_mode </ref/states/backup_mode>`,
+allow you to back up files via :ref:`backup_mode <file-state-backups>`,
 backup_mode can be configured on a per state basis, or in the minion config
 (note that if set in the minion config this would simply be the default
 method to use, you still need to specify that the file should be backed up!).
@@ -226,86 +254,136 @@ specifying the pillar variable is the same one used for :py:func:`pillar.get
     <salt.states.file.managed>` state is only supported in Salt 2015.8.4 and
     newer.
 
-What is the best way to restart a Salt daemon using Salt?
----------------------------------------------------------
+What is the best way to restart a Salt Minion daemon using Salt after upgrade?
+------------------------------------------------------------------------------
 
-Updating the salt-minion package requires a restart of the salt-minion service.
-But restarting the service while in the middle of a state run interrupts the
-process of the minion running states and sending results back to the master.
-It's a tricky problem to solve, and we're working on it, but in the meantime
-one way of handling this (on Linux and UNIX-based operating systems) is to use
-**at** (a job scheduler which predates cron) to schedule a restart of the
-service. **at** is not installed by default on most distros, and requires a
-service to be running (usually called **atd**) in order to schedule jobs.
-Here's an example of how to upgrade the salt-minion package at the end of a
-Salt run, and schedule a service restart for one minute after the package
-update completes.
+Updating the ``salt-minion`` package requires a restart of the ``salt-minion``
+service. But restarting the service while in the middle of a state run
+interrupts the process of the Minion running states and sending results back to
+the Master. A common way to workaround that is to schedule restarting of the
+Minion service using :ref:`masterless mode <masterless-quickstart>` after all
+other states have been applied. This allows the minion to keep Minion to Master
+connection alive for the Minion to report the final results to the Master, while
+the service is restarting in the background.
 
-Linux/Unix
-**********
+Upgrade without automatic restart
+*********************************
 
-.. code-block:: yaml
+Doing the Minion upgrade seems to be a simplest state in your SLS file at
+first. But the operating systems such as Debian GNU/Linux, Ubuntu and their
+derivatives start the service after the package installation by default.
+To prevent this, we need to create policy layer which will prevent the Minion
+service to restart right after the upgrade:
 
-    salt-minion:
+.. code-block:: jinja
+
+    {%- if grains['os_family'] == 'Debian' %}
+
+    Disable starting services:
+      file.managed:
+        - name: /usr/sbin/policy-rc.d
+        - user: root
+        - group: root
+        - mode: 0755
+        - contents:
+          - '#!/bin/sh'
+          - exit 101
+        # do not touch if already exists
+        - replace: False
+        - prereq:
+          - pkg: Upgrade Salt Minion
+
+    {%- endif %}
+
+    Upgrade Salt Minion:
       pkg.installed:
         - name: salt-minion
-        - version: 2014.1.7-3.el6
+        - version: 2016.11.3{% if grains['os_family'] == 'Debian' %}+ds-1{% endif %}
         - order: last
-      service.running:
+
+    Enable Salt Minion:
+      service.enabled:
         - name: salt-minion
         - require:
-          - pkg: salt-minion
-      cmd.wait:
-        - name: echo service salt-minion restart | at now + 1 minute
-        - watch:
-          - pkg: salt-minion
+          - pkg: Upgrade Salt Minion
 
-To ensure that **at** is installed and **atd** is running, the following states
-can be used (be sure to double-check the package name and service name for the
-distro the minion is running, in case they differ from the example below.
+    {%- if grains['os_family'] == 'Debian' %}
 
-.. code-block:: yaml
+    Enable starting services:
+      file.absent:
+        - name: /usr/sbin/policy-rc.d
+        - onchanges:
+          - pkg: Upgrade Salt Minion
 
-    at:
-      pkg.installed:
-        - name: at
-      service.running:
-        - name: atd
-        - enable: True
+    {%- endif %}
 
-An alternative to using the :program:`atd` daemon is to fork and disown the
-process.
+Restart using states
+********************
 
-.. code-block:: yaml
+Now we can apply the workaround to restart the Minion in reliable way.
+The following example works on UNIX-like operating systems:
 
-    restart_minion:
+.. code-block:: jinja
+
+    {%- if grains['os'] != 'Windows' %}
+    Restart Salt Minion:
       cmd.run:
-        - name: |
+        - name: 'salt-call --local service.restart salt-minion'
+        - bg: True
+        - onchanges:
+          - pkg: Upgrade Salt Minion
+    {%- endif %}
+
+Note that restarting the ``salt-minion`` service on Windows operating systems is
+not always necessary when performing an upgrade. The installer stops the
+``salt-minion`` service, removes it, deletes the contents of the ``\salt\bin``
+directory, installs the new code, re-creates the ``salt-minion`` service, and
+starts it (by default). The restart step **would** be necessary during the
+upgrade process, however, if the minion config was edited after the upgrade or
+installation. If a minion restart is necessary, the state above can be edited
+as follows:
+
+.. code-block:: jinja
+
+    Restart Salt Minion:
+      cmd.run:
+    {%- if grains['kernel'] == 'Windows' %}
+        - name: 'C:\salt\salt-call.bat --local service.restart salt-minion'
+    {%- else %}
+        - name: 'salt-call --local service.restart salt-minion'
+    {%- endif %}
+        - bg: True
+        - onchanges:
+          - pkg: Upgrade Salt Minion
+
+However, it requires more advanced tricks to upgrade from legacy version of
+Salt (before ``2016.3.0``) on UNIX-like operating systems, where executing
+commands in the background is not supported:
+
+.. code-block:: jinja
+
+    Restart Salt Minion:
+      cmd.run:
+    {%- if grains['kernel'] == 'Windows' %}
+        - name: 'start powershell "Restart-Service -Name salt-minion"'
+    {%- else %}
+        # fork and disown the process
+        - name: |-
             exec 0>&- # close stdin
             exec 1>&- # close stdout
             exec 2>&- # close stderr
-            nohup /bin/sh -c 'sleep 10 && salt-call --local service.restart salt-minion' &
-        - python_shell: True
-        - order: last
+            nohup salt-call --local service.restart salt-minion &
+    {%- endif %}
 
-Windows
-*******
+Restart using remote executions
+*******************************
 
-For Windows machines, restarting the minion can be accomplished using the
-following state:
-
-.. code-block:: yaml
-
-    schedule-start:
-      cmd.run:
-        - name: 'start powershell "Restart-Service -Name salt-minion"'
-        - order: last
-
-or running immediately from the command line:
+Restart the Minion from the command line:
 
 .. code-block:: bash
 
-    salt -G kernel:Windows cmd.run 'start powershell "Restart-Service -Name salt-minion"'
+    salt -G kernel:Windows cmd.run_bg 'C:\salt\salt-call.bat --local service.restart salt-minion'
+    salt -C 'not G@kernel:Windows' cmd.run_bg 'salt-call --local service.restart salt-minion'
 
 Salting the Salt Master
 -----------------------
@@ -341,7 +419,28 @@ files on the local system, grains are considered less secure than other
 identifiers in Salt. Use caution when targeting sensitive operations or setting
 pillar values based on grain data.
 
+The only grain which can be safely used is ``grains['id']`` which contains the Minion ID.
+
 When possible, you should target sensitive operations and data using the Minion
 ID. If the Minion ID of a system changes, the Salt Minion's public key must be
 re-accepted by an administrator on the Salt Master, making it less vulnerable
 to impersonation attacks.
+
+Why Did the Value for a Grain Change on Its Own?
+------------------------------------------------
+
+This is usually the result of an upstream change in an OS distribution that
+replaces or removes something that Salt was using to detect the grain.
+Fortunately, when this occurs, you can use Salt to fix it with a command
+similar to the following:
+
+.. code-block:: bash
+
+    salt -G 'grain:ChangedValue' grains.setvals "{'grain': 'OldValue'}"
+
+(Replacing *grain*, *ChangedValue*, and *OldValue* with
+the grain and values that you want to change / set.)
+
+You should also `file an issue <https://github.com/saltstack/salt/issues>`_
+describing the change so it can be fixed in Salt.
+

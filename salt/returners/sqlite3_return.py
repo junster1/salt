@@ -73,7 +73,7 @@ To use the alternative configuration, append '--return_config alternative' to th
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -106,7 +106,7 @@ __virtualname__ = 'sqlite3'
 
 def __virtual__():
     if not HAS_SQLITE3:
-        return False
+        return False, 'Could not import sqlite3 returner; sqlite3 is not installed.'
     return __virtualname__
 
 
@@ -178,7 +178,7 @@ def returner(ret):
     _close_conn(conn)
 
 
-def save_load(jid, load):
+def save_load(jid, load, minions=None):
     '''
     Save the load to the specified jid
     '''
@@ -193,6 +193,13 @@ def save_load(jid, load):
     _close_conn(conn)
 
 
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
+
+
 def get_load(jid):
     '''
     Return the load from a specified jid
@@ -205,7 +212,7 @@ def get_load(jid):
                 {'jid': jid})
     data = cur.fetchone()
     if data:
-        return json.loads(data)
+        return json.loads(data[0].encode())
     _close_conn(conn)
     return {}
 
@@ -296,4 +303,4 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''
-    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid(__opts__)

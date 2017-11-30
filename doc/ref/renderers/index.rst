@@ -114,18 +114,17 @@ module implement the ``render`` function.
 
 The ``render`` function will be passed the path of the SLS file as an argument.
 
-The purpose of of ``render`` function is to  parse the passed file and to return
+The purpose of the ``render`` function is to parse the passed file and to return
 the Python data structure derived from the file.
 
 Custom renderers must be placed in a ``_renderers`` directory within the
 :conf_master:`file_roots` specified by the master config file.
 
 Custom renderers are distributed when any of the following are run:
-    :mod:`state.highstate <salt.modules.state.highstate>`
 
-    :mod:`saltutil.sync_renderers <salt.modules.saltutil.sync_renderers>`
-
-    :mod:`saltutil.sync_all <salt.modules.saltutil.sync_all>`
+- :py:func:`state.apply <salt.modules.state.apply_>`
+- :py:func:`saltutil.sync_renderers <salt.modules.saltutil.sync_renderers>`
+- :py:func:`saltutil.sync_all <salt.modules.saltutil.sync_all>`
 
 Any custom renderers which have been synced to a minion, that are named the
 same as one of Salt's default set of renderers, will take the place of the
@@ -146,10 +145,16 @@ Here is a simple YAML renderer example:
 .. code-block:: python
 
     import yaml
-    def render(yaml_data, env='', sls='', **kws):
-        if not isinstance(yaml_data, basestring):
+    from salt.utils.yamlloader import SaltYamlSafeLoader
+    from salt.ext import six
+
+    def render(yaml_data, saltenv='', sls='', **kws):
+        if not isinstance(yaml_data, six.string_types):
             yaml_data = yaml_data.read()
-        data = yaml.load(yaml_data)
+        data = yaml.load(
+            yaml_data,
+            Loader=SaltYamlSafeLoader
+        )
         return data if data else {}
 
 Full List of Renderers

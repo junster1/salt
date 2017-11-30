@@ -10,6 +10,11 @@ Manage ini files
 
 '''
 
+# Import Python libs
+from __future__ import absolute_import
+
+# Import Salt libs
+from salt.ext import six
 
 __virtualname__ = 'ini'
 
@@ -21,12 +26,14 @@ def __virtual__():
     return __virtualname__ if 'ini.set_option' in __salt__ else False
 
 
-def options_present(name, sections=None):
+def options_present(name, sections=None, separator='=', strict=False):
     '''
     .. code-block:: yaml
 
         /home/saltminion/api-paste.ini:
           ini.options_present:
+            - separator: '='
+            - strict: True
             - sections:
                 test:
                   testkey: 'testval'
@@ -35,7 +42,8 @@ def options_present(name, sections=None):
                   testkey1: 'testval121'
 
     options present in file and not specified in sections
-    dict will be untouched
+    dict will be untouched, unless `strict: True` flag is
+    used
 
     changes dict will contain the list of changes made
     '''
@@ -49,8 +57,14 @@ def options_present(name, sections=None):
         ret['comment'] = ''
         for section in sections or {}:
             section_name = ' in section ' + section if section != 'DEFAULT_IMPLICIT' else ''
+            try:
+                cur_section = __salt__['ini.get_section'](name, section, separator)
+            except IOError as err:
+                ret['comment'] = "{0}".format(err)
+                ret['result'] = False
+                return ret
             for key in sections[section]:
-                cur_value = __salt__['ini.get_option'](name, section, key)
+                cur_value = cur_section.get(key)
                 if cur_value == str(sections[section][key]):
                     ret['comment'] += 'Key {0}{1} unchanged.\n'.format(key, section_name)
                     continue
@@ -59,23 +73,49 @@ def options_present(name, sections=None):
         if ret['comment'] == '':
             ret['comment'] = 'No changes detected.'
         return ret
-    changes = __salt__['ini.set_option'](name, sections)
+    try:
+        changes = {}
+        if sections:
+            for section_name, section_body in sections.items():
+                changes[section_name] = {}
+                if strict:
+                    original = __salt__['ini.get_section'](name, section_name, separator)
+                    for key_to_remove in set(original.keys()).difference(section_body.keys()):
+                        orig_value = __salt__['ini.get_option'](name, section_name, key_to_remove, separator)
+                        __salt__['ini.remove_option'](name, section_name, key_to_remove, separator)
+                        changes[section_name].update({key_to_remove: ''})
+                        changes[section_name].update({key_to_remove: {'before': orig_value,
+                                                                      'after': None}})
+                options_updated = __salt__['ini.set_option'](name, {section_name: section_body}, separator)
+                if options_updated:
+                    changes[section_name].update(options_updated[section_name])
+                if not changes[section_name]:
+                    del changes[section_name]
+        else:
+            changes = __salt__['ini.set_option'](name, sections, separator)
+    except (IOError, KeyError) as err:
+        ret['comment'] = "{0}".format(err)
+        ret['result'] = False
+        return ret
     if 'error' in changes:
         ret['result'] = False
         ret['comment'] = 'Errors encountered. {0}'.format(changes['error'])
         ret['changes'] = {}
     else:
-        ret['comment'] = 'Changes take effect'
-        ret['changes'] = changes
+        for name, body in changes.items():
+            if body:
+                ret['comment'] = 'Changes take effect'
+                ret['changes'].update({name: changes[name]})
     return ret
 
 
-def options_absent(name, sections=None):
+def options_absent(name, sections=None, separator='='):
     '''
     .. code-block:: yaml
 
         /home/saltminion/api-paste.ini:
           ini.options_absent:
+            - separator: '='
             - sections:
                 test:
                   - testkey
@@ -98,8 +138,14 @@ def options_absent(name, sections=None):
         ret['comment'] = ''
         for section in sections or {}:
             section_name = ' in section ' + section if section != 'DEFAULT_IMPLICIT' else ''
+            try:
+                cur_section = __salt__['ini.get_section'](name, section, separator)
+            except IOError as err:
+                ret['comment'] = "{0}".format(err)
+                ret['result'] = False
+                return ret
             for key in sections[section]:
-                cur_value = __salt__['ini.get_option'](name, section, key)
+                cur_value = cur_section.get(key)
                 if not cur_value:
                     ret['comment'] += 'Key {0}{1} does not exist.\n'.format(key, section_name)
                     continue
@@ -109,23 +155,30 @@ def options_absent(name, sections=None):
             ret['comment'] = 'No changes detected.'
         return ret
     sections = sections or {}
-    for section, key in sections.iteritems():
-        current_value = __salt__['ini.remove_option'](name, section, key)
-        if not current_value:
-            continue
-        if section not in ret['changes']:
-            ret['changes'].update({section: {}})
-        ret['changes'][section].update({key: current_value})
-        ret['comment'] = 'Changes take effect'
+    for section, keys in six.iteritems(sections):
+        for key in keys:
+            try:
+                current_value = __salt__['ini.remove_option'](name, section, key, separator)
+            except IOError as err:
+                ret['comment'] = "{0}".format(err)
+                ret['result'] = False
+                return ret
+            if not current_value:
+                continue
+            if section not in ret['changes']:
+                ret['changes'].update({section: {}})
+            ret['changes'][section].update({key: current_value})
+            ret['comment'] = 'Changes take effect'
     return ret
 
 
-def sections_present(name, sections=None):
+def sections_present(name, sections=None, separator='='):
     '''
     .. code-block:: yaml
 
         /home/saltminion/api-paste.ini:
           ini.sections_present:
+            - separator: '='
             - sections:
                 - section_one
                 - section_two
@@ -145,8 +198,13 @@ def sections_present(name, sections=None):
         ret['result'] = True
         ret['comment'] = ''
         for section in sections or {}:
-            cur_section = __salt__['ini.get_section'](name, section)
-            if cmp(dict(sections[section]), cur_section) == 0:
+            try:
+                cur_section = __salt__['ini.get_section'](name, section, separator)
+            except IOError as err:
+                ret['result'] = False
+                ret['comment'] = "{0}".format(err)
+                return ret
+            if dict(sections[section]) == cur_section:
                 ret['comment'] += 'Section unchanged {0}.\n'.format(section)
                 continue
             elif cur_section:
@@ -160,7 +218,12 @@ def sections_present(name, sections=None):
     section_to_update = {}
     for section_name in sections or []:
         section_to_update.update({section_name: {}})
-    changes = __salt__['ini.set_option'](name, section_to_update)
+    try:
+        changes = __salt__['ini.set_option'](name, section_to_update, separator)
+    except IOError as err:
+        ret['result'] = False
+        ret['comment'] = "{0}".format(err)
+        return ret
     if 'error' in changes:
         ret['result'] = False
         ret['changes'] = 'Errors encountered {0}'.format(changes['error'])
@@ -170,12 +233,13 @@ def sections_present(name, sections=None):
     return ret
 
 
-def sections_absent(name, sections=None):
+def sections_absent(name, sections=None, separator='='):
     '''
     .. code-block:: yaml
 
         /home/saltminion/api-paste.ini:
           ini.sections_absent:
+            - separator: '='
             - sections:
                 - test
                 - test1
@@ -192,7 +256,12 @@ def sections_absent(name, sections=None):
         ret['result'] = True
         ret['comment'] = ''
         for section in sections or []:
-            cur_section = __salt__['ini.get_section'](name, section)
+            try:
+                cur_section = __salt__['ini.get_section'](name, section, separator)
+            except IOError as err:
+                ret['result'] = False
+                ret['comment'] = "{0}".format(err)
+                return ret
             if not cur_section:
                 ret['comment'] += 'Section {0} does not exist.\n'.format(section)
                 continue
@@ -202,7 +271,12 @@ def sections_absent(name, sections=None):
             ret['comment'] = 'No changes detected.'
         return ret
     for section in sections or []:
-        cur_section = __salt__['ini.remove_section'](name, section)
+        try:
+            cur_section = __salt__['ini.remove_section'](name, section, separator)
+        except IOError as err:
+            ret['result'] = False
+            ret['comment'] = "{0}".format(err)
+            return ret
         if not cur_section:
             continue
         ret['changes'][section] = cur_section

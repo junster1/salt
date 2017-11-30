@@ -7,7 +7,7 @@ Management zfs datasets
 :depends:       zfs
 :platform:      smartos, illumos, solaris, freebsd, linux
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: yaml
 
@@ -44,7 +44,7 @@ from __future__ import absolute_import
 
 # Import Python libs
 import logging
-from time import strftime, strptime, gmtime
+from time import strftime, strptime, localtime
 
 log = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def __virtual__():
     else:
         return (
             False,
-            '{0} state module can only be loaded on illumos, Solaris, SmartOS, FreeBSD, ...'.format(
+            '{0} state module can only be loaded on illumos, Solaris, SmartOS, FreeBSD, Linux, ...'.format(
                 __virtualname__
             )
         )
@@ -81,7 +81,6 @@ def _absent(name, dataset_type, force=False, recursive=False):
         also destroy all the child datasets
 
     '''
-    name = name.lower()
     dataset_type = dataset_type.lower()
     ret = {'name': name,
            'changes': {},
@@ -148,7 +147,7 @@ def filesystem_absent(name, force=False, recursive=False):
     recursive : boolean
         also destroy all the child datasets (zfs destroy -r)
 
-    ..warning:
+    .. warning::
 
         If a volume with ``name`` exists, this state will succeed without
         destroying the volume specified by ``name``. This module is dataset type sensitive.
@@ -168,7 +167,7 @@ def volume_absent(name, force=False, recursive=False):
     recursive : boolean
         also destroy all the child datasets (zfs destroy -r)
 
-    ..warning:
+    .. warning::
 
         If a filesystem with ``name`` exists, this state will succeed without
         destroying the filesystem specified by ``name``. This module is dataset type sensitive.
@@ -216,7 +215,6 @@ def hold_absent(name, snapshot, recursive=False):
     recursive : boolean
         recursively releases a hold with the given tag on the snapshots of all descendent file systems.
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -273,7 +271,6 @@ def hold_present(name, snapshot, recursive=False):
     recursive : boolean
         recursively add hold with the given tag on the snapshots of all descendent file systems.
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -333,18 +330,15 @@ def filesystem_present(name, create_parent=False, properties=None, cloned_from=N
     properties : dict
         additional zfs properties (-o)
 
-    ..note::
-
+    .. note::
         ``cloned_from`` is only use if the filesystem does not exist yet,
         when ``cloned_from`` is set after the filesystem exists it will be ignored.
 
-    ..note::
-
-        properties do not get cloned, if you specify the properties in the state file
-        they will be applied on a subsequent run.
+    .. note::
+        Properties do not get cloned, if you specify the properties in the
+        state file they will be applied on a subsequent run.
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -358,7 +352,7 @@ def filesystem_present(name, create_parent=False, properties=None, cloned_from=N
     log.debug('zfs.filesystem_present::{0}::config::cloned_from = {1}'.format(name, cloned_from))
     log.debug('zfs.filesystem_present::{0}::config::properties = {1}'.format(name, properties))
 
-    for prop in properties.keys():  # salt breaks the on/off/yes/no properties
+    for prop in properties:  # salt breaks the on/off/yes/no properties
         if isinstance(properties[prop], bool):
             properties[prop] = 'on' if properties[prop] else 'off'
 
@@ -384,7 +378,7 @@ def filesystem_present(name, create_parent=False, properties=None, cloned_from=N
             if len(properties) > 0:
                 result = __salt__['zfs.get'](name, **{'properties': ','.join(properties.keys()), 'fields': 'value', 'depth': 1})
 
-            for prop in properties.keys():
+            for prop in properties:
                 if properties[prop] != result[name][prop]['value']:
                     if name not in ret['changes']:
                         ret['changes'][name] = {}
@@ -396,7 +390,7 @@ def filesystem_present(name, create_parent=False, properties=None, cloned_from=N
                     if name not in result:
                         ret['result'] = False
                     else:
-                        for prop in result[name].keys():
+                        for prop in result[name]:
                             if result[name][prop] != 'set':
                                 ret['result'] = False
 
@@ -446,23 +440,21 @@ def volume_present(name, volume_size, sparse=False, create_parent=False, propert
     properties : dict
         additional zfs properties (-o)
 
-    ..note::
-
+    .. note::
         ``cloned_from`` is only use if the volume does not exist yet,
         when ``cloned_from`` is set after the volume exists it will be ignored.
 
-    ..note::
-
-        properties do not get cloned, if you specify the properties in the state file
+    .. note::
+        Properties do not get cloned, if you specify the properties in the state file
         they will be applied on a subsequent run.
 
-        volume_size is considered a property so it the volume's size will be corrected
-        when the properties get update if it differs from the original volume.
+        ``volume_size`` is considered a property, so the volume's size will be
+        corrected when the properties get updated if it differs from the
+        original volume.
 
-        the sparse parameter is ignored when using cloned_from.
+        The sparse parameter is ignored when using ``cloned_from``.
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -478,7 +470,7 @@ def volume_present(name, volume_size, sparse=False, create_parent=False, propert
     log.debug('zfs.volume_present::{0}::config::cloned_from = {1}'.format(name, cloned_from))
     log.debug('zfs.volume_present::{0}::config::properties = {1}'.format(name, properties))
 
-    for prop in properties.keys():  # salt breaks the on/off/yes/no properties
+    for prop in properties:  # salt breaks the on/off/yes/no properties
         if isinstance(properties[prop], bool):
             properties[prop] = 'on' if properties[prop] else 'off'
 
@@ -503,7 +495,7 @@ def volume_present(name, volume_size, sparse=False, create_parent=False, propert
             properties['volsize'] = volume_size  # add volume_size to properties
             result = __salt__['zfs.get'](name, **{'properties': ','.join(properties.keys()), 'fields': 'value', 'depth': 1})
 
-            for prop in properties.keys():
+            for prop in properties:
                 if properties[prop] != result[name][prop]['value']:
                     if name not in ret['changes']:
                         ret['changes'][name] = {}
@@ -515,7 +507,7 @@ def volume_present(name, volume_size, sparse=False, create_parent=False, propert
                     if name not in result:
                         ret['result'] = False
                     else:
-                        for prop in result[name].keys():
+                        for prop in result[name]:
                             if result[name][prop] != 'set':
                                 ret['result'] = False
 
@@ -562,7 +554,6 @@ def bookmark_present(name, snapshot):
         name of snapshot
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -609,12 +600,10 @@ def snapshot_present(name, recursive=False, properties=None):
     properties : dict
         additional zfs properties (-o)
 
-    ..note:
-
-        properties are only set at creation time.
+    .. note:
+        Properties are only set at creation time
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -627,7 +616,7 @@ def snapshot_present(name, recursive=False, properties=None):
     log.debug('zfs.snapshot_present::{0}::config::recursive = {1}'.format(name, recursive))
     log.debug('zfs.snapshot_present::{0}::config::properties = {1}'.format(name, properties))
 
-    for prop in properties.keys():  # salt breaks the on/off/yes/no properties
+    for prop in properties:  # salt breaks the on/off/yes/no properties
         if isinstance(properties[prop], bool):
             properties[prop] = 'on' if properties[prop] else 'off'
 
@@ -662,13 +651,12 @@ def promoted(name):
     name : string
         name of fileset or volume
 
-    ..warning::
+    .. warning::
 
         only one dataset can be the origin,
         if you promote a clone the original will now point to the promoted dataset
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -723,14 +711,17 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
         day, month, and year) by default all are set to 0 the value indicated the
         number of snapshots of that type to keep around.
 
-    ..warning::
+    .. warning::
 
         snapshots will only be created and pruned every time the state runs.
         a schedule must be setup to automatically run the state. this means that if
         you run the state daily the hourly snapshot will only be made once per day!
 
+    .. versionchanged:: Oxygen
+
+        switched to localtime from gmtime so times now take into account timezones.
+
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': True,
@@ -746,7 +737,7 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
         'month': 0,
         'year': 0,
     }
-    for hold in state_schedule.keys():
+    for hold in state_schedule:
         if hold not in schedule:
             del state_schedule[hold]
     schedule.update(state_schedule)
@@ -760,7 +751,7 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
         ret['result'] = False
     # check schedule
     snap_count = 0
-    for hold in schedule.keys():
+    for hold in schedule:
         if not isinstance(schedule[hold], int):
             ret['comment'] = 'schedule values must be integers'
             ret['result'] = False
@@ -780,7 +771,7 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
         # retreive snapshots
         prunable = []
         snapshots = {}
-        for key in schedule.keys():
+        for key in schedule:
             snapshots[key] = []
 
         for snap in sorted(__salt__['zfs.list'](name, **{'recursive': True, 'depth': 1, 'type': 'snapshot'}).keys()):
@@ -793,7 +784,7 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
                 if snap not in holds or holds[snap] == 'no holds':
                     prunable.append(snap)
                     continue
-                for hold in holds[snap].keys():
+                for hold in holds[snap]:
                     hold = hold.strip()
                     if hold not in snapshots.keys():
                         continue
@@ -802,8 +793,8 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
 
         # create snapshot
         needed_holds = []
-        current_timestamp = gmtime()
-        for hold in snapshots.keys():
+        current_timestamp = localtime()
+        for hold in snapshots:
             # check if we need need to consider hold
             if schedule[hold] == 0:
                 continue
@@ -875,7 +866,7 @@ def scheduled_snapshot(name, prefix, recursive=True, schedule=None):
                 ret['changes']['pruned'] = []
 
         # prune snapshots
-        for hold in schedule.keys():
+        for hold in schedule:
             if hold not in snapshots.keys():
                 continue
             while len(snapshots[hold]) > schedule[hold]:

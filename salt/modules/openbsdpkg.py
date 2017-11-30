@@ -1,6 +1,25 @@
 # -*- coding: utf-8 -*-
 '''
 Package support for OpenBSD
+
+.. note::
+
+    The package repository is configured on each host using ``/etc/pkg.conf``
+
+.. versionchanged:: 2016.3.5
+
+    Package versions on OpenBSD are not normally specified explicitly; instead
+    packages may be available in multiple *flavors*, and *branches* which are
+    specified by the format of the package name. This module allows you to use
+    the same formatting as ``pkg_add(1)``, and will select the empty flavor and
+    default branch by default. Examples:
+
+    .. code-block:: yaml
+
+      - rsync
+      - vim--no_x11
+      - ruby%2.3
+
 '''
 from __future__ import absolute_import
 
@@ -10,18 +29,18 @@ import re
 import logging
 
 # Import Salt libs
-import salt.utils
+import salt.utils.data
+import salt.utils.versions
 from salt.exceptions import CommandExecutionError, MinionError
 
 log = logging.getLogger(__name__)
 
-
+# FIXME: replace guesswork with `pkg_info -z` to correctly identify package
+#        flavors and branches
 __PKG_RE = re.compile('^((?:[^-]+|-(?![0-9]))+)-([0-9][^-]*)(?:-(.*))?$')
 
 # Define the module's virtual name
 __virtualname__ = 'pkg'
-
-# XXX need a way of setting PKG_PATH instead of inheriting from the environment
 
 
 def __virtual__():
@@ -46,9 +65,9 @@ def list_pkgs(versions_as_list=False, **kwargs):
 
         salt '*' pkg.list_pkgs
     '''
-    versions_as_list = salt.utils.is_true(versions_as_list)
+    versions_as_list = salt.utils.data.is_true(versions_as_list)
     # not yet implemented or not applicable
-    if any([salt.utils.is_true(kwargs.get(x))
+    if any([salt.utils.data.is_true(kwargs.get(x))
             for x in ('removed', 'purge_desired')]):
         return {}
 
@@ -96,8 +115,7 @@ def latest_version(*names, **kwargs):
     for name in names:
         ret[name] = ''
 
-    stems = [x.split('--')[0] for x in names]
-    cmd = 'pkg_info -q -I {0}'.format(' '.join(stems))
+    cmd = 'pkg_info -q -I {0}'.format(' '.join(names))
     out = __salt__['cmd.run_stdout'](cmd, python_shell=False, output_loglevel='trace')
     for line in out.splitlines():
         try:
@@ -106,7 +124,7 @@ def latest_version(*names, **kwargs):
             continue
         pkgname += '--{0}'.format(flavor) if flavor else ''
         cur = pkgs.get(pkgname, '')
-        if not cur or salt.utils.compare_versions(ver1=cur,
+        if not cur or salt.utils.versions.compare(ver1=cur,
                                                   oper='<',
                                                   ver2=pkgver):
             ret[pkgname] = pkgver
@@ -115,9 +133,6 @@ def latest_version(*names, **kwargs):
     if len(names) == 1:
         return ret[names[0]]
     return ret
-
-# available_version is being deprecated
-available_version = salt.utils.alias_function(latest_version, 'available_version')
 
 
 def version(*names, **kwargs):
@@ -157,7 +172,8 @@ def install(name=None, pkgs=None, sources=None, **kwargs):
 
         salt '*' pkg.install pkgs='["<package name>", "<package name>"]'
 
-    CLI Example, Install more than one package from a alternate source (e.g. salt file-server, HTTP, FTP, local filesystem):
+    CLI Example, Install more than one package from a alternate source (e.g.
+    salt file-server, HTTP, FTP, local filesystem):
 
     .. code-block:: bash
 
@@ -176,10 +192,13 @@ def install(name=None, pkgs=None, sources=None, **kwargs):
     old = list_pkgs()
     errors = []
     for pkg in pkg_params:
+        # A special case for OpenBSD package "branches" is also required in
+        # salt/states/pkg.py
         if pkg_type == 'repository':
-            stem, flavor = (pkg.split('--') + [''])[:2]
-            pkg = '--'.join((stem, flavor))
-        cmd = 'pkg_add -x {0}'.format(pkg)
+            stem, branch = (pkg.split('%') + [''])[:2]
+            base, flavor = (stem.split('--') + [''])[:2]
+            pkg = '{0}--{1}%{2}'.format(base, flavor, branch)
+        cmd = 'pkg_add -x -I {0}'.format(pkg)
         out = __salt__['cmd.run_all'](
             cmd,
             python_shell=False,
@@ -190,7 +209,7 @@ def install(name=None, pkgs=None, sources=None, **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -249,7 +268,7 @@ def remove(name=None, pkgs=None, **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(

@@ -56,8 +56,8 @@ Using Custom State Modules
 Place your custom state modules inside a ``_states`` directory within the
 :conf_master:`file_roots` specified by the master config file. These custom
 state modules can then be distributed in a number of ways. Custom state modules
-are distributed when :mod:`state.highstate <salt.modules.state.highstate>` is
-run, or by executing the :mod:`saltutil.sync_states
+are distributed when :py:func:`state.apply <salt.modules.state.apply_>` is run,
+or by executing the :mod:`saltutil.sync_states
 <salt.modules.saltutil.sync_states>` or :mod:`saltutil.sync_all
 <salt.modules.saltutil.sync_all>` functions.
 
@@ -121,31 +121,52 @@ A State Module must return a dict containing the following keys/values:
   be a key, with its value being another dict with keys called "old" and "new"
   containing the old/new values. For example, the pkg state's **changes** dict
   has one key for each package changed, with the "old" and "new" keys in its
-  sub-dict containing the old and new versions of the package.
+  sub-dict containing the old and new versions of the package. For example,
+  the final changes dictionary for this scenario would look something like this:
+
+  .. code-block:: python
+
+    ret['changes'].update({'my_pkg_name': {'old': '',
+                                           'new': 'my_pkg_name-1.0'}})
+
+
 - **result:** A tristate value.  ``True`` if the action was successful,
   ``False`` if it was not, or ``None`` if the state was run in test mode,
   ``test=True``, and changes would have been made if the state was not run in
   test mode.
 
-  +--------------------+-----------+-----------+
-  |                    | live mode | test mode |
-  +====================+===========+===========+
-  | no changes         | ``True``  | ``True``  |
-  +--------------------+-----------+-----------+
-  | successful changes | ``True``  | ``None``  |
-  +--------------------+-----------+-----------+
-  | failed changes     | ``False`` | ``None``  |
-  +--------------------+-----------+-----------+
+  +--------------------+-----------+------------------------+
+  |                    | live mode | test mode              |
+  +====================+===========+========================+
+  | no changes         | ``True``  | ``True``               |
+  +--------------------+-----------+------------------------+
+  | successful changes | ``True``  | ``None``               |
+  +--------------------+-----------+------------------------+
+  | failed changes     | ``False`` | ``False`` or ``None``  |
+  +--------------------+-----------+------------------------+
 
   .. note::
 
-      Test mode does not predict if the changes will be successful or not.
+      Test mode does not predict if the changes will be successful or not,
+      and hence the result for pending changes is usually ``None``.
 
-- **comment:** A string containing a summary of the result.
+      However, if a state is going to fail and this can be determined
+      in test mode without applying the change, ``False`` can be returned.
 
-The return data can also, include the **pchanges** key, this statnds for
+- **comment:** A list of strings or a single string summarizing the result.
+  Note that support for lists of strings is available as of Salt Oxygen.
+  Lists of strings will be joined with newlines to form the final comment;
+  this is useful to allow multiple comments from subparts of a state.
+  Prefer to keep line lengths short (use multiple lines as needed),
+  and end with punctuation (e.g. a period) to delimit multiple comments.
+
+The return data can also, include the **pchanges** key, this stands for
 `predictive changes`. The **pchanges** key informs the State system what
 changes are predicted to occur.
+
+.. note::
+
+    States should not return data which cannot be serialized such as frozensets.
 
 Test State
 ==========
@@ -163,6 +184,14 @@ run. An example of such a check could look like this:
         return ret
 
 Make sure to test and return before performing any real actions on the minion.
+
+.. note::
+
+    Be sure to refer to the ``result`` table listed above and displaying any
+    possible changes when writing support for ``test``. Looking for changes in
+    a state is essential to ``test=true`` functionality. If a state is predicted
+    to have no changes when ``test=true`` (or ``test: true`` in a config file)
+    is used, then the result of the final state **should not** be ``None``.
 
 Watcher Function
 ================
@@ -247,6 +276,20 @@ logs. The following code snippet demonstrates writing log messages:
     log.info('Here is Some Information')
     log.warning('You Should Not Do That')
     log.error('It Is Busted')
+
+
+Strings and Unicode
+===================
+
+A state module author should always assume that strings fed to the module
+have already decoded from strings into Unicode. In Python 2, these will
+be of type 'Unicode' and in Python 3 they will be of type ``str``. Calling
+from a state to other Salt sub-systems, such as execution modules should
+pass Unicode (or bytes if passing binary data). In the rare event that a state needs to write directly
+to disk, Unicode should be encoded to a string immediately before writing
+to disk. An author may use ``__salt_system_encoding__`` to learn what the
+encoding type of the system is. For example,
+`'my_string'.encode(__salt_system_encoding__')`.
 
 
 Full State Module Example

@@ -30,7 +30,7 @@ import os
 import re
 import logging
 from salt.ext.six.moves import zip
-import salt.ext.six as six
+from salt.ext import six
 
 # Make sure augeas python interface is installed
 HAS_AUGEAS = False
@@ -41,7 +41,7 @@ except ImportError:
     pass
 
 # Import salt libs
-import salt.utils
+import salt.utils.args
 from salt.exceptions import SaltInvocationError
 
 log = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def execute(context=None, lens=None, commands=(), load_path=None):
     commands
         The Augeas commands to execute
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched
@@ -199,7 +199,7 @@ def execute(context=None, lens=None, commands=(), load_path=None):
             method = METHOD_MAP[cmd]
             nargs = arg_map[method]
 
-            parts = salt.utils.shlex_split(arg)
+            parts = salt.utils.args.shlex_split(arg)
 
             if len(parts) not in nargs:
                 err = '{0} takes {1} args: {2}'.format(method, nargs, parts)
@@ -274,7 +274,7 @@ def get(path, value='', load_path=None):
     value
         The optional value to get
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched
@@ -404,7 +404,7 @@ def match(path, value='', load_path=None):
     value
         The value to match on
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched
@@ -443,7 +443,7 @@ def remove(path, load_path=None):
     path
         The path to remove
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched
@@ -482,7 +482,7 @@ def ls(path, load_path=None):  # pylint: disable=C0103
     path
         The path to list
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched
@@ -533,7 +533,7 @@ def tree(path, load_path=None):
     path
         The base of the recursive listing
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     load_path
         A colon-spearated list of directories that modules should be searched

@@ -41,7 +41,7 @@ Nagios settings may also be configured as::
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -177,7 +177,7 @@ def __virtual__():
     '''
     Return virtualname
     '''
-    return __virtualname__
+    return 'nagios.list_plugins' in __salt__
 
 
 def returner(ret):

@@ -73,7 +73,7 @@ To use the alternative configuration, append '--return_config alternative' to th
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -95,7 +95,7 @@ import salt.utils.jid
 import salt.returners
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import cPickle, map  # pylint: disable=import-error,no-name-in-module,redefined-builtin
 
 log = logging.getLogger(__name__)
@@ -230,8 +230,7 @@ def _send(saltdata, metric_base, opts):
     port = opts.get('port')
     skip = opts.get('skip')
     metric_base_pattern = opts.get('carbon.metric_base_pattern')
-    if 'mode' in opts:
-        mode = opts.get('mode').lower()
+    mode = opts.get('mode').lower() if 'mode' in opts else 'text'
 
     log.debug('Carbon minion configured with host: {0}:{1}'.format(host, port))
     log.debug('Using carbon protocol: {0}'.format(mode))
@@ -304,4 +303,4 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''
-    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid(__opts__)

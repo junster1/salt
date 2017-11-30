@@ -5,7 +5,7 @@ Connection module for Amazon KMS
 .. versionadded:: 2015.8.0
 
 :configuration: This module accepts explicit kms credentials but can also utilize
-    IAM roles assigned to the instance trough Instance Profiles. Dynamic
+    IAM roles assigned to the instance through Instance Profiles. Dynamic
     credentials are then automatically obtained from AWS API and no further
     configuration is necessary. More Information available at::
 
@@ -41,11 +41,11 @@ from __future__ import absolute_import
 # Import Python libs
 import logging
 from salt.serializers import json
-from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=import-error,no-name-in-module
 
 # Import Salt libs
 import salt.utils.compat
 import salt.utils.odict as odict
+from salt.utils.versions import LooseVersion as _LooseVersion
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ try:
     # pylint: enable=unused-import
     logging.getLogger('boto').setLevel(logging.CRITICAL)
     HAS_BOTO = True
-except ImportError:
+except (ImportError, AttributeError):
     HAS_BOTO = False
 
 
@@ -80,7 +80,7 @@ def __virtual__():
 def __init__(opts):
     salt.utils.compat.pack_dunder(__name__)
     if HAS_BOTO:
-        __utils__['boto.assign_funcs'](__name__, 'kms')
+        __utils__['boto.assign_funcs'](__name__, 'kms', pack=__salt__)
 
 
 def create_alias(alias_name, target_key_id, region=None, key=None, keyid=None,
@@ -476,13 +476,21 @@ def list_grants(key_id, limit=None, marker=None, region=None, key=None,
         key_id = _get_key_id(key_id)
     r = {}
     try:
-        grants = conn.list_grants(
-            key_id,
-            limit=limit,
-            marker=marker
-        )
-        # TODO: handle limit/marker automatically
-        r['grants'] = grants['Grants']
+        _grants = []
+        next_marker = None
+        while True:
+            grants = conn.list_grants(
+                key_id,
+                limit=limit,
+                marker=next_marker
+            )
+            for grant in grants['Grants']:
+                _grants.append(grant)
+            if 'NextMarker' in grants:
+                next_marker = grants['NextMarker']
+            else:
+                break
+        r['grants'] = _grants
     except boto.exception.BotoServerError as e:
         r['error'] = __utils__['boto.get_error'](e)
     return r

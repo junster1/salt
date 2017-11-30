@@ -2,7 +2,7 @@
 '''
 Manage Grafana v2.0 data sources
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: yaml
 
@@ -83,7 +83,7 @@ def present(name,
     if isinstance(profile, string_types):
         profile = __salt__['config.option'](profile)
 
-    ret = {'result': None, 'comment': None, 'changes': None}
+    ret = {'name': name, 'result': None, 'comment': None, 'changes': None}
     datasource = _get_datasource(profile, name)
     data = _get_json_data(name, type, url, access, user, password, database,
         basic_auth, basic_auth_user, basic_auth_password, is_default, json_data)
@@ -207,6 +207,8 @@ def _diff(old, new):
     new = new.copy()
     for key in old_keys:
         if key == 'id' or key == 'orgId':
+            del old[key]
+        elif key not in new.keys():
             del old[key]
         elif old[key] == new[key]:
             del old[key]

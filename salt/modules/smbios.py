@@ -18,8 +18,7 @@ import uuid
 import re
 
 # Import salt libs
-# import salt.log
-import salt.utils
+import salt.utils.path
 
 # Solve the Chicken and egg problem where grains need to run before any
 # of the modules are loaded and are generally available for any usage.
@@ -30,7 +29,7 @@ from salt.ext.six.moves import zip  # pylint: disable=import-error,redefined-bui
 
 log = logging.getLogger(__name__)
 
-DMIDECODER = salt.utils.which_bin(['dmidecode', 'smbios'])
+DMIDECODER = salt.utils.path.which_bin(['dmidecode', 'smbios'])
 
 
 def __virtual__():
@@ -86,6 +85,15 @@ def get(string, clean=True):
     '''
 
     val = _dmidecoder('-s {0}'.format(string)).strip()
+
+    # Sometimes dmidecode delivers comments in strings.
+    # Don't.
+    val = '\n'.join([v for v in val.split('\n') if not v.startswith('#')])
+
+    # handle missing /dev/mem
+    if val.startswith('/dev/mem'):
+        return None
+
     if not clean or _dmi_isclean(string, val):
         return val
 
@@ -298,12 +306,13 @@ def _dmi_isclean(key, val):
         return False
     elif re.search('serial|part|version', key):
         # 'To be filled by O.E.M.
+        # 'Not applicable' etc.
         # 'Not specified' etc.
         # 0000000, 1234667 etc.
         # begone!
         return not re.match(r'^[0]+$', val) \
                 and not re.match(r'[0]?1234567[8]?[9]?[0]?', val) \
-                and not re.search(r'sernum|part[_-]?number|specified|filled', val, flags=re.IGNORECASE)
+                and not re.search(r'sernum|part[_-]?number|specified|filled|applicable', val, flags=re.IGNORECASE)
     elif re.search('asset|manufacturer', key):
         # AssetTag0. Manufacturer04. Begone.
         return not re.search(r'manufacturer|to be filled|available|asset|^no(ne|t)', val, flags=re.IGNORECASE)

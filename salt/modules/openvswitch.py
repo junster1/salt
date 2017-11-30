@@ -12,7 +12,7 @@ from __future__ import absolute_import
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def __virtual__():
     '''
     Only load the module if Open vSwitch is installed
     '''
-    if salt.utils.which('ovs-vsctl'):
+    if salt.utils.path.which('ovs-vsctl'):
         return 'openvswitch'
     return False
 
@@ -100,7 +100,7 @@ def bridge_list():
     Returns:
         List of bridges (or empty list), False on failure.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -121,7 +121,7 @@ def bridge_exists(br):
     Returns:
         True if Bridge exists, else False.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -145,7 +145,7 @@ def bridge_create(br, may_exist=True):
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -169,7 +169,7 @@ def bridge_delete(br, if_exists=True):
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -195,7 +195,7 @@ def port_add(br, port, may_exist=False):
         port: A string - port name
         may_exist: Bool, if False - attempting to create a port that exists returns False.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -221,7 +221,7 @@ def port_remove(br, port, if_exists=True):
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -249,7 +249,7 @@ def port_list(br):
     Returns:
         List of bridges (or empty list), False on failure.
 
-    .. versionadded:: 2015.8.1
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -273,7 +273,7 @@ def port_get_tag(port):
     Returns:
         List of tags (or empty list), False on failure.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -297,7 +297,7 @@ def interface_get_options(port):
     Returns:
         String containing optional parameters of port's interface, False on failure.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -321,7 +321,7 @@ def interface_get_type(port):
     Returns:
         String - type of interface or empty string, False on failure.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -335,7 +335,7 @@ def interface_get_type(port):
     return _stdout_list_split(retcode, stdout)
 
 
-def port_create_vlan(br, port, id):
+def port_create_vlan(br, port, id, internal=False):
     '''
     Isolate VM traffic using VLANs.
 
@@ -343,11 +343,12 @@ def port_create_vlan(br, port, id):
         br: A string - bridge name.
         port: A string - port name.
         id: An integer in the valid range 0 to 4095 (inclusive), name of VLAN.
+        internal: A boolean to create an internal interface if one does not exist.
 
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -359,14 +360,18 @@ def port_create_vlan(br, port, id):
         return False
     elif not bridge_exists(br):
         return False
-    elif port not in interfaces:
+    elif not internal and port not in interfaces:
         return False
     elif port in port_list(br):
         cmd = 'ovs-vsctl set port {0} tag={1}'.format(port, id)
+        if internal:
+            cmd += ' -- set interface {0} type=internal'.format(port)
         result = __salt__['cmd.run_all'](cmd)
         return _retcode_to_bool(result['retcode'])
     else:
         cmd = 'ovs-vsctl add-port {0} {1} tag={2}'.format(br, port, id)
+        if internal:
+            cmd += ' -- set interface {0} type=internal'.format(port)
         result = __salt__['cmd.run_all'](cmd)
         return _retcode_to_bool(result['retcode'])
 
@@ -384,7 +389,7 @@ def port_create_gre(br, port, id, remote):
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash
@@ -422,7 +427,7 @@ def port_create_vxlan(br, port, id, remote, dst_port=None):
     Returns:
         True on success, else False.
 
-    .. versionadded:: 2015.8.2
+    .. versionadded:: 2016.3.0
 
     CLI Example:
     .. code-block:: bash

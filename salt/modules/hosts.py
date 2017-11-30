@@ -8,11 +8,11 @@ from __future__ import absolute_import
 import os
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 import salt.utils.odict as odict
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import range  # pylint: disable=import-error,no-name-in-module,redefined-builtin
 
 
@@ -21,10 +21,6 @@ def __get_hosts_filename():
     '''
     Return the path to the appropriate hosts file
     '''
-    # TODO: Investigate using  "%SystemRoot%\system32" for this
-    if salt.utils.is_windows():
-        return 'C:\\Windows\\System32\\drivers\\etc\\hosts'
-
     return __salt__['config.option']('hosts.file')
 
 
@@ -37,7 +33,8 @@ def _get_or_create_hostfile():
     if hfn is None:
         hfn = ''
     if not os.path.exists(hfn):
-        salt.utils.fopen(hfn, 'w').close()
+        with salt.utils.files.fopen(hfn, 'w'):
+            pass
     return hfn
 
 
@@ -50,13 +47,13 @@ def _list_hosts():
     ret = odict.OrderedDict()
     if not os.path.isfile(hfn):
         return ret
-    with salt.utils.fopen(hfn) as ifile:
+    with salt.utils.files.fopen(hfn) as ifile:
         for line in ifile:
             line = line.strip()
             if not line:
                 continue
             if line.startswith('#'):
-                ret.setdefault('comment-{0}'.format(count), []).extend(line)
+                ret.setdefault('comment-{0}'.format(count), []).append(line)
                 count += 1
                 continue
             if '#' in line:
@@ -143,7 +140,7 @@ def set_host(ip, alias):
     Set the host entry in the hosts file for the given ip, this will overwrite
     any previous entry for the given ip
 
-    .. versionchanged:: Boron
+    .. versionchanged:: 2016.3.0
         If ``alias`` does not include any host names (it is the empty
         string or contains only whitespace), all entries for the given
         IP address are removed.
@@ -164,7 +161,8 @@ def set_host(ip, alias):
     if not alias.strip():
         line_to_add = ''
 
-    lines = salt.utils.fopen(hfn).readlines()
+    with salt.utils.files.fopen(hfn) as fp_:
+        lines = fp_.readlines()
     for ind, line in enumerate(lines):
         tmpline = line.strip()
         if not tmpline:
@@ -184,7 +182,7 @@ def set_host(ip, alias):
             lines[-1] += os.linesep
         line = line_to_add
         lines.append(line)
-    with salt.utils.fopen(hfn, 'w+') as ofile:
+    with salt.utils.files.fopen(hfn, 'w+') as ofile:
         ofile.writelines(lines)
     return True
 
@@ -202,7 +200,8 @@ def rm_host(ip, alias):
     if not has_pair(ip, alias):
         return True
     hfn = _get_or_create_hostfile()
-    lines = salt.utils.fopen(hfn).readlines()
+    with salt.utils.files.fopen(hfn) as fp_:
+        lines = fp_.readlines()
     for ind in range(len(lines)):
         tmpline = lines[ind].strip()
         if not tmpline:
@@ -222,7 +221,7 @@ def rm_host(ip, alias):
             else:
                 # Only an alias was removed
                 lines[ind] = newline + os.linesep
-    with salt.utils.fopen(hfn, 'w+') as ofile:
+    with salt.utils.files.fopen(hfn, 'w+') as ofile:
         ofile.writelines(lines)
     return True
 
@@ -272,7 +271,7 @@ def _write_hosts(hosts):
         lines.append(line)
 
     hfn = _get_or_create_hostfile()
-    with salt.utils.fopen(hfn, 'w+') as ofile:
+    with salt.utils.files.fopen(hfn, 'w+') as ofile:
         for line in lines:
             if line.strip():
                 # /etc/hosts needs to end with EOL so that some utils that read

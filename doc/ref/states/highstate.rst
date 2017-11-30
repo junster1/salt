@@ -25,7 +25,7 @@ during state execution.
 
 Configurable via :conf_master:`state_top`.
 
-.. seealso:: :doc:`A detailed description of the top file </ref/states/top>`
+.. seealso:: :ref:`A detailed description of the top file <states-top>`
 
 .. _include-declaration:
 
@@ -34,7 +34,7 @@ Include declaration
 
 Defines a list of :ref:`module-reference` strings to include in this ``SLS``.
 
-Occurs only in the top level of the highstate structure.
+Occurs only in the top level of the SLS data structure.
 
 Example:
 
@@ -58,10 +58,10 @@ file ``salt://edit/vim.sls``.
 ID declaration
 --------------
 
-Defines an individual highstate component. Always references a value of a
-dictionary containing keys referencing :ref:`state-declaration` and
-:ref:`requisite-declaration`. Can be overridden by a :ref:`name-declaration` or
-a :ref:`names-declaration`.
+Defines an individual :ref:`highstate <running-highstate>` component. Always
+references a value of a dictionary containing keys referencing
+:ref:`state-declaration` and :ref:`requisite-declaration`. Can be overridden by
+a :ref:`name-declaration` or a :ref:`names-declaration`.
 
 Occurs on the top level or under the :ref:`extend-declaration`.
 
@@ -72,7 +72,7 @@ ID declarations with the same name will be ignored.
 .. note:: Naming gotchas
 
     In Salt versions earlier than 0.9.7, ID declarations containing dots would
-    result in unpredictable highstate output.
+    result in unpredictable output.
 
 .. _extend-declaration:
 
@@ -115,7 +115,7 @@ declaration that will restart Apache whenever the Apache configuration file,
     <requisites-watch-in>` or :ref:`require_in <requisites-require-in>` syntax
     instead of extending another ``SLS`` file.
 
-    :doc:`State Requisites </ref/states/requisites>`
+    :ref:`State Requisites <requisites>`
 
 .. _state-declaration:
 

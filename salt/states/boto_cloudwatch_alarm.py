@@ -10,7 +10,7 @@ Amazon's services, and so may incur charges.
 This module uses boto, which can be installed via package, or pip.
 
 This module accepts explicit credentials but can also utilize
-IAM roles assigned to the instance trough Instance Profiles. Dynamic
+IAM roles assigned to the instance through Instance Profiles. Dynamic
 credentials are then automatically obtained from AWS API and no further
 configuration is necessary. More Information available at:
 
@@ -57,7 +57,7 @@ as a passed in dict, or as a string to pull from pillars or minion config:
 from __future__ import absolute_import
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 
 def __virtual__():

@@ -12,7 +12,10 @@ import logging
 
 # Import salt libs
 import salt.config
-import salt.utils
+import salt.utils.data
+import salt.utils.dictupdate
+import salt.utils.files
+import salt.utils.platform
 try:
     # Gated for salt-ssh (salt.utils.cloud imports msgpack)
     import salt.utils.cloud
@@ -25,7 +28,13 @@ import salt.syspaths as syspaths
 import salt.utils.sdb as sdb
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
+
+if salt.utils.platform.is_windows():
+    _HOSTS_FILE = os.path.join(
+        os.environ['SystemRoot'], 'System32', 'drivers', 'etc', 'hosts')
+else:
+    _HOSTS_FILE = os.path.join(os.sep, 'etc', 'hosts')
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +74,7 @@ DEFAULTS = {'mongo.db': 'salt',
             'ldap.attrs': None,
             'ldap.binddn': '',
             'ldap.bindpw': '',
-            'hosts.file': '/etc/hosts',
+            'hosts.file': _HOSTS_FILE,
             'aliases.file': '/etc/aliases',
             'virt.images': os.path.join(syspaths.SRV_ROOT_DIR, 'salt-images'),
             'virt.tunnel': False,
@@ -97,17 +106,10 @@ def manage_mode(mode):
 
         salt '*' config.manage_mode
     '''
-    if mode is None:
-        return None
-    if not isinstance(mode, six.string_types):
-        # Make it a string in case it's not
-        mode = str(mode)
-    # Strip any quotes and initial 0, though zero-pad it up to 4
-    ret = mode.strip('"').strip('\'').lstrip('0').zfill(4)
-    if ret[0] != '0':
-        # Always include a leading zero
-        return '0{0}'.format(ret)
-    return ret
+    # config.manage_mode should no longer be invoked from the __salt__ dunder
+    # in Salt code, this function is only being left here for backwards
+    # compatibility.
+    return salt.utils.files.normalize_mode(mode)
 
 
 def valid_fileproto(uri):
@@ -177,14 +179,14 @@ def merge(value,
     if not omit_opts:
         if value in __opts__:
             ret = __opts__[value]
-            if isinstance(ret, str):
+            if isinstance(ret, six.string_types):
                 return ret
     if not omit_master:
         if value in __pillar__.get('master', {}):
             tmp = __pillar__['master'][value]
             if ret is None:
                 ret = tmp
-                if isinstance(ret, str):
+                if isinstance(ret, six.string_types):
                     return ret
             elif isinstance(ret, dict) and isinstance(tmp, dict):
                 tmp.update(ret)
@@ -197,7 +199,7 @@ def merge(value,
             tmp = __pillar__[value]
             if ret is None:
                 ret = tmp
-                if isinstance(ret, str):
+                if isinstance(ret, six.string_types):
                     return ret
             elif isinstance(ret, dict) and isinstance(tmp, dict):
                 tmp.update(ret)
@@ -207,7 +209,9 @@ def merge(value,
                 ret = list(ret) + list(tmp)
     if ret is None and value in DEFAULTS:
         return DEFAULTS[value]
-    return ret or default
+    if ret is None:
+        return default
+    return ret
 
 
 def get(key, default='', delimiter=':', merge=None):
@@ -243,14 +247,39 @@ def get(key, default='', delimiter=':', merge=None):
     This function traverses these data stores in this order, returning the
     first match found:
 
-    - Minion config file
+    - Minion configuration
     - Minion's grains
     - Minion's pillar data
-    - Master config file
+    - Master configuration (requires :conf_minion:`pillar_opts` to be set to
+      ``True`` in Minion config file in order to work)
 
     This means that if there is a value that is going to be the same for the
     majority of minions, it can be configured in the Master config file, and
     then overridden using the grains, pillar, or Minion config file.
+
+    Adding config options to the Master or Minion configuration file is easy:
+
+    .. code-block:: yaml
+
+        my-config-option: value
+        cafe-menu:
+          - egg and bacon
+          - egg sausage and bacon
+          - egg and spam
+          - egg bacon and spam
+          - egg bacon sausage and spam
+          - spam bacon sausage and spam
+          - spam egg spam spam bacon and spam
+          - spam sausage spam spam bacon spam tomato and spam
+
+    .. note::
+        Minion configuration options built into Salt (like those defined
+        :ref:`here <configuration-salt-minion>`) will *always* be defined in
+        the Minion configuration and thus *cannot be overridden by grains or
+        pillar data*. However, additional (user-defined) configuration options
+        (as in the above example) will not be in the Minion configuration by
+        default and thus can be overridden using grains/pillar data by leaving
+        the option out of the minion config file.
 
     **Arguments**
 
@@ -325,31 +354,35 @@ def get(key, default='', delimiter=':', merge=None):
         salt '*' config.get lxc.container_profile:centos merge=recurse
     '''
     if merge is None:
-        ret = salt.utils.traverse_dict_and_list(__opts__,
-                                                key,
-                                                '_|-',
-                                                delimiter=delimiter)
+        ret = salt.utils.data.traverse_dict_and_list(
+            __opts__,
+            key,
+            '_|-',
+            delimiter=delimiter)
         if ret != '_|-':
             return sdb.sdb_get(ret, __opts__)
 
-        ret = salt.utils.traverse_dict_and_list(__grains__,
-                                                key,
-                                                '_|-',
-                                                delimiter)
+        ret = salt.utils.data.traverse_dict_and_list(
+            __grains__,
+            key,
+            '_|-',
+            delimiter)
         if ret != '_|-':
             return sdb.sdb_get(ret, __opts__)
 
-        ret = salt.utils.traverse_dict_and_list(__pillar__,
-                                                key,
-                                                '_|-',
-                                                delimiter=delimiter)
+        ret = salt.utils.data.traverse_dict_and_list(
+            __pillar__,
+            key,
+            '_|-',
+            delimiter=delimiter)
         if ret != '_|-':
             return sdb.sdb_get(ret, __opts__)
 
-        ret = salt.utils.traverse_dict_and_list(__pillar__.get('master', {}),
-                                                key,
-                                                '_|-',
-                                                delimiter=delimiter)
+        ret = salt.utils.data.traverse_dict_and_list(
+            __pillar__.get('master', {}),
+            key,
+            '_|-',
+            delimiter=delimiter)
         if ret != '_|-':
             return sdb.sdb_get(ret, __opts__)
     else:
@@ -364,10 +397,11 @@ def get(key, default='', delimiter=':', merge=None):
         data = salt.utils.dictupdate.merge(data, __pillar__, strategy=merge, merge_lists=merge_lists)
         data = salt.utils.dictupdate.merge(data, __grains__, strategy=merge, merge_lists=merge_lists)
         data = salt.utils.dictupdate.merge(data, __opts__, strategy=merge, merge_lists=merge_lists)
-        ret = salt.utils.traverse_dict_and_list(data,
-                                                key,
-                                                '_|-',
-                                                delimiter=delimiter)
+        ret = salt.utils.data.traverse_dict_and_list(
+            data,
+            key,
+            '_|-',
+            delimiter=delimiter)
         if ret != '_|-':
             return sdb.sdb_get(ret, __opts__)
 

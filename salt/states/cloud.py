@@ -19,7 +19,7 @@ from __future__ import absolute_import
 import pprint
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 # Import Salt Libs
 import salt.utils.cloud as suc
@@ -64,7 +64,7 @@ def _get_instance(names):
     return instance
 
 
-def present(name, cloud_provider, onlyif=None, unless=None, **kwargs):
+def present(name, cloud_provider, onlyif=None, unless=None, opts=None, **kwargs):
     '''
     Spin up a single instance on a cloud provider, using salt-cloud. This state
     does not take a profile argument; rather, it takes the arguments that would
@@ -87,6 +87,9 @@ def present(name, cloud_provider, onlyif=None, unless=None, **kwargs):
 
     unless
         Do not run the state at least unless succeed
+
+    opts
+        Any extra opts that need to be used
     '''
     ret = {'name': name,
            'changes': {},
@@ -97,17 +100,17 @@ def present(name, cloud_provider, onlyif=None, unless=None, **kwargs):
     if onlyif is not None:
         if not isinstance(onlyif, six.string_types):
             if not onlyif:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
         elif isinstance(onlyif, six.string_types):
             if retcode(onlyif, python_shell=True) != 0:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
     if unless is not None:
         if not isinstance(unless, six.string_types):
             if unless:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
         elif isinstance(unless, six.string_types):
             if retcode(unless, python_shell=True) == 0:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
 
     # provider=None not cloud_provider because
     # need to ensure ALL providers don't have the instance
@@ -120,7 +123,7 @@ def present(name, cloud_provider, onlyif=None, unless=None, **kwargs):
         ret['comment'] = 'Instance {0} needs to be created'.format(name)
         return ret
 
-    info = __salt__['cloud.create'](cloud_provider, name, **kwargs)
+    info = __salt__['cloud.create'](cloud_provider, name, opts=opts, **kwargs)
     if info and 'Error' not in info:
         ret['changes'] = info
         ret['result'] = True
@@ -130,7 +133,7 @@ def present(name, cloud_provider, onlyif=None, unless=None, **kwargs):
             cloud_provider,
             pprint.pformat(kwargs)
         )
-    elif info and 'Error' not in info:
+    elif info and 'Error' in info:
         ret['result'] = False
         ret['comment'] = ('Failed to create instance {0}'
                           'using profile {1}: {2}').format(
@@ -174,17 +177,17 @@ def absent(name, onlyif=None, unless=None):
     if onlyif is not None:
         if not isinstance(onlyif, six.string_types):
             if not onlyif:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
         elif isinstance(onlyif, six.string_types):
             if retcode(onlyif, python_shell=True) != 0:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
     if unless is not None:
         if not isinstance(unless, six.string_types):
             if unless:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
         elif isinstance(unless, six.string_types):
             if retcode(unless, python_shell=True) == 0:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
 
     if not __salt__['cloud.has_instance'](name=name, provider=None):
         ret['result'] = True
@@ -214,7 +217,7 @@ def absent(name, onlyif=None, unless=None):
     return ret
 
 
-def profile(name, profile, onlyif=None, unless=None, **kwargs):
+def profile(name, profile, onlyif=None, unless=None, opts=None, **kwargs):
     '''
     Create a single instance on a cloud provider, using a salt-cloud profile.
 
@@ -239,6 +242,8 @@ def profile(name, profile, onlyif=None, unless=None, **kwargs):
     kwargs
         Any profile override or addition
 
+    opts
+        Any extra opts that need to be used
     '''
     ret = {'name': name,
            'changes': {},
@@ -248,20 +253,19 @@ def profile(name, profile, onlyif=None, unless=None, **kwargs):
     if onlyif is not None:
         if not isinstance(onlyif, six.string_types):
             if not onlyif:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
         elif isinstance(onlyif, six.string_types):
             if retcode(onlyif, python_shell=True) != 0:
-                return _valid(name, comment='onlyif execution failed')
+                return _valid(name, comment='onlyif condition is false')
     if unless is not None:
         if not isinstance(unless, six.string_types):
             if unless:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
         elif isinstance(unless, six.string_types):
             if retcode(unless, python_shell=True) == 0:
-                return _valid(name, comment='unless execution succeeded')
+                return _valid(name, comment='unless condition is true')
     instance = _get_instance([name])
-    prov = str(next(six.iterkeys(instance)))
-    if instance and 'Not Actioned' not in prov:
+    if instance and not any('Not Actioned' in key for key in instance):
         ret['result'] = True
         ret['comment'] = 'Already present instance {0}'.format(name)
         return ret
@@ -270,7 +274,7 @@ def profile(name, profile, onlyif=None, unless=None, **kwargs):
         ret['comment'] = 'Instance {0} needs to be created'.format(name)
         return ret
 
-    info = __salt__['cloud.profile'](profile, name, vm_overrides=kwargs)
+    info = __salt__['cloud.profile'](profile, name, vm_overrides=kwargs, opts=opts)
 
     # get either {Error: ''} or {namestring: {Error: ''}}
     # which is what we can get from providers returns

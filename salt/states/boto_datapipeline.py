@@ -2,6 +2,8 @@
 '''
 Manage Data Pipelines
 
+.. versionadded:: 2016.3.0
+
 Be aware that this interacts with Amazon's services, and so may incur charges.
 
 This module uses ``boto3``, which can be installed via package, or pip.
@@ -46,12 +48,16 @@ config:
       - parameter_values:
           myDDBTableName: my-dynamo-table
 '''
-from __future__ import absolute_import
 
+# Import Python libs
+from __future__ import absolute_import
 import copy
 import datetime
 import difflib
 import json
+
+# Import Salt lobs
+from salt.ext import six
 from salt.ext.six.moves import zip
 
 
@@ -316,11 +322,11 @@ def _pipeline_present_with_definition(name, expected_pipeline_objects,
 
     pipeline_objects = pipeline_definition.get('pipelineObjects')
     parameter_objects = pipeline_definition.get('parameterObjects')
-    paramater_values = pipeline_definition.get('parameterValues')
+    parameter_values = pipeline_definition.get('parameterValues')
 
     present = (_recursive_compare(_cleaned(pipeline_objects), _cleaned(expected_pipeline_objects)) and
                _recursive_compare(parameter_objects, expected_parameter_objects) and
-               _recursive_compare(paramater_values, expected_parameter_values))
+               _recursive_compare(parameter_values, expected_parameter_values))
     return present, pipeline_definition
 
 
@@ -414,7 +420,7 @@ def _standardize(structure):
                 mutating_helper(each)
         elif isinstance(structure, dict):
             structure = dict(structure)
-            for k, v in structure.iteritems():
+            for k, v in six.iteritems(structure):
                 mutating_helper(k)
                 mutating_helper(v)
 
@@ -482,7 +488,7 @@ def _dict_to_list_ids(objects):
     while still satisfying the boto api.
     '''
     list_with_ids = []
-    for key, value in objects.iteritems():
+    for key, value in six.iteritems(objects):
         element = {'id': key}
         element.update(value)
         list_with_ids.append(element)
@@ -516,7 +522,7 @@ def _properties_from_dict(d, key_name='key'):
         ]
     '''
     fields = []
-    for key, value in d.iteritems():
+    for key, value in six.iteritems(d):
         if isinstance(value, dict):
             fields.append({
                 key_name: key,

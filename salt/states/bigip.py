@@ -11,7 +11,7 @@ from __future__ import absolute_import
 import json
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 
 #set up virtual function
@@ -19,7 +19,7 @@ def __virtual__():
     '''
     Only load if the bigip exec module is available in __salt__
     '''
-    return 'bigip' if 'bigip.exec_action' in __salt__ else False
+    return 'bigip' if 'bigip.list_transaction' in __salt__ else False
 
 
 def _load_result(response, ret):
@@ -85,7 +85,7 @@ def _check_for_changes(entity_type, ret, existing, modified):
         if 'generation' in existing['content'].keys():
             del existing['content']['generation']
 
-        if cmp(modified['content'], existing['content']) == 0:
+        if modified['content'] == existing['content']:
             ret['comment'] = '{entity_type} is currently enforced to the desired state.  No changes made.'.format(entity_type=entity_type)
         else:
             ret['comment'] = '{entity_type} was enforced to the desired state.  Note: Only parameters specified ' \
@@ -94,7 +94,7 @@ def _check_for_changes(entity_type, ret, existing, modified):
             ret['changes']['new'] = modified['content']
 
     else:
-        if cmp(modified, existing) == 0:
+        if modified == existing:
             ret['comment'] = '{entity_type} is currently enforced to the desired state.  No changes made.'.format(entity_type=entity_type)
         else:
             ret['comment'] = '{entity_type} was enforced to the desired state.  Note: Only parameters specified ' \
@@ -198,7 +198,7 @@ def create_node(hostname, username, password, name, address):
         ret['result'] = True
         ret['comment'] = 'A node by this name currently exists.  No change made.'
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
         response = __salt__['bigip.create_node'](hostname, username, password, name, address)
 
@@ -685,7 +685,7 @@ def create_pool(hostname, username, password, name, members=None,
         ret['result'] = True
         ret['comment'] = 'A pool by this name currently exists.  No change made.'
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         response = __salt__['bigip.create_pool'](hostname=hostname,
@@ -901,7 +901,7 @@ def manage_pool(hostname, username, password, name,
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         new = __salt__['bigip.create_pool'](hostname=hostname,
@@ -1121,7 +1121,7 @@ def modify_pool(hostname, username, password, name,
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
         ret['comment'] = 'A pool with this name was not found.'
     # else something else was returned
@@ -2490,7 +2490,7 @@ def delete_virtual(hostname, username, password, name):
 
 def list_monitor(hostname, username, password, monitor_type, name):
     '''
-    A fucntion to list an exsiting monitor.
+    A function to list an exsiting monitor.
 
     hostname
         The host/address of the bigip device
@@ -2567,7 +2567,7 @@ def create_monitor(hostname, username, password, monitor_type, name, **kwargs):
         ret['result'] = True
         ret['comment'] = 'A monitor by this name currently exists.  No change made.'
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         response = __salt__['bigip.create_monitor'](hostname, username, password, monitor_type, name, **kwargs)
@@ -2642,7 +2642,7 @@ def manage_monitor(hostname, username, password, monitor_type, name, **kwargs):
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         response = __salt__['bigip.create_monitor'](hostname, username, password, monitor_type, name, **kwargs)
@@ -2717,7 +2717,7 @@ def modify_monitor(hostname, username, password, monitor_type, name, **kwargs):
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
         ret['comment'] = 'A Monitor with this name was not found.'
     # else something else was returned
@@ -2864,7 +2864,7 @@ def create_profile(hostname, username, password, profile_type, name, **kwargs):
         ret['result'] = True
         ret['comment'] = 'A profile by this name currently exists.  No change made.'
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         response = __salt__['bigip.create_profile'](hostname, username, password, profile_type, name, **kwargs)
@@ -2940,7 +2940,7 @@ def manage_profile(hostname, username, password, profile_type, name, **kwargs):
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
 
         response = __salt__['bigip.create_profile'](hostname, username, password, profile_type, name, **kwargs)
@@ -3015,7 +3015,7 @@ def modify_profile(hostname, username, password, profile_type, name, **kwargs):
         else:
             ret = _load_result(modified, ret)
 
-    # if it doesnt exist
+    # if it doesn't exist
     elif existing['code'] == 404:
         ret['comment'] = 'A Profile with this name was not found.'
     # else something else was returned

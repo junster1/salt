@@ -7,11 +7,11 @@ in proxy/fx2.py--just enough to get data from the chassis to include
 in grains.
 '''
 from __future__ import absolute_import
-import salt.utils
 import logging
 import salt.proxy.fx2
 import salt.modules.cmdmod
 import salt.modules.dracr
+import salt.utils.platform
 
 __proxyenabled__ = ['fx2']
 
@@ -24,10 +24,12 @@ GRAINS_CACHE = {}
 
 
 def __virtual__():
-    if not salt.utils.is_proxy():
-        return False
-    else:
-        return __virtualname__
+    try:
+        if salt.utils.platform.is_proxy() and __opts__['proxy']['proxytype'] == 'fx2':
+            return __virtualname__
+    except KeyError:
+        pass
+    return False
 
 
 def _find_credentials():
@@ -42,9 +44,10 @@ def _find_credentials():
 
     for user in usernames:
         for pwd in __pillar__['proxy']['passwords']:
-            r = __salt__['dracr.get_chassis_name'](host=__pillar__['proxy']['host'],
-                                                   admin_username=user,
-                                                   admin_password=pwd)
+            r = salt.modules.dracr.get_chassis_name(
+                host=__pillar__['proxy']['host'],
+                admin_username=user,
+                admin_password=pwd)
             # Retcode will be present if the chassis_name call failed
             try:
                 if r.get('retcode', None) is None:

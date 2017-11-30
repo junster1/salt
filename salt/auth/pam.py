@@ -12,9 +12,26 @@ a user against the Pluggable Authentication Modules (PAM) on the system.
 
 Implemented using ctypes, so no compilation is necessary.
 
+There is one extra configuration option for pam.  The `pam_service` that is
+authenticated against.  This defaults to `login`
+
+.. code-block:: yaml
+
+    auth.pam.service: login
+
+.. note:: Solaris-like (SmartOS, OmniOS, ...) systems may need ``auth.pam.service`` set to ``other``.
+
 .. note:: PAM authentication will not work for the ``root`` user.
 
     The Python interface to PAM does not support authenticating as ``root``.
+
+.. note:: Using PAM groups with SSSD groups on python2.
+
+    To use sssd with the PAM eauth module and groups the `pysss` module is
+    needed.  On RedHat/CentOS this is `python-sss`.
+
+    This should not be needed with python >= 3.3, because the `os` modules has the
+    `getgrouplist` function.
 
 '''
 
@@ -25,8 +42,11 @@ from ctypes import c_void_p, c_uint, c_char_p, c_char, c_int
 from ctypes.util import find_library
 
 # Import Salt libs
-from salt.utils import get_group_list
+import salt.utils.user
 from salt.ext.six.moves import range  # pylint: disable=import-error,redefined-builtin
+
+# Import 3rd-party libs
+from salt.ext import six
 
 LIBPAM = CDLL(find_library('pam'))
 LIBC = CDLL(find_library('c'))
@@ -110,6 +130,10 @@ try:
     PAM_AUTHENTICATE.restype = c_int
     PAM_AUTHENTICATE.argtypes = [PamHandle, c_int]
 
+    PAM_ACCT_MGMT = LIBPAM.pam_acct_mgmt
+    PAM_ACCT_MGMT.restype = c_int
+    PAM_ACCT_MGMT.argtypes = [PamHandle, c_int]
+
     PAM_END = LIBPAM.pam_end
     PAM_END.restype = c_int
     PAM_END.argtypes = [PamHandle, c_int]
@@ -126,7 +150,7 @@ def __virtual__():
     return HAS_PAM
 
 
-def authenticate(username, password, service='login'):
+def authenticate(username, password):
     '''
     Returns True if the given username and password authenticate for the
     given service.  Returns False otherwise
@@ -134,10 +158,16 @@ def authenticate(username, password, service='login'):
     ``username``: the username to authenticate
 
     ``password``: the password in plain text
-
-    ``service``: the PAM service to authenticate against.
-                 Defaults to 'login'
     '''
+    service = __opts__.get('auth.pam.service', 'login')
+
+    if isinstance(username, six.text_type):
+        username = username.encode(__salt_system_encoding__)
+    if isinstance(password, six.text_type):
+        password = password.encode(__salt_system_encoding__)
+    if isinstance(service, six.text_type):
+        service = service.encode(__salt_system_encoding__)
+
     @CONV_FUNC
     def my_conv(n_messages, messages, p_response, app_data):
         '''
@@ -149,7 +179,7 @@ def authenticate(username, password, service='login'):
         p_response[0] = cast(addr, POINTER(PamResponse))
         for i in range(n_messages):
             if messages[i].contents.msg_style == PAM_PROMPT_ECHO_OFF:
-                pw_copy = STRDUP(str(password))
+                pw_copy = STRDUP(password)
                 p_response.contents[i].resp = cast(pw_copy, c_char_p)
                 p_response.contents[i].resp_retcode = 0
         return 0
@@ -165,6 +195,8 @@ def authenticate(username, password, service='login'):
         return False
 
     retval = PAM_AUTHENTICATE(handle, 0)
+    if retval == 0:
+        PAM_ACCT_MGMT(handle, 0)
     PAM_END(handle, 0)
     return retval == 0
 
@@ -173,7 +205,7 @@ def auth(username, password, **kwargs):
     '''
     Authenticate via pam
     '''
-    return authenticate(username, password, kwargs.get('service', 'login'))
+    return authenticate(username, password)
 
 
 def groups(username, *args, **kwargs):
@@ -182,4 +214,4 @@ def groups(username, *args, **kwargs):
 
     Uses system groups
     '''
-    return get_group_list(username)
+    return salt.utils.user.get_group_list(username)

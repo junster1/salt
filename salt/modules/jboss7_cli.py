@@ -20,7 +20,7 @@ returns it as a dictionary so that an execution of an operation can then be veri
 
 In order to run each function, jboss_config dictionary with the following properties must be passed:
  * cli_path: the path to jboss-cli script, for example: '/opt/jboss/jboss-7.0/bin/jboss-cli.sh'
- * controller: the ip addres and port of controller, for example: 10.11.12.13:9999
+ * controller: the IP address and port of controller, for example: 10.11.12.13:9999
  * cli_user: username to connect to jboss administration console if necessary
  * cli_password: password to connect to jboss administration console if necessary
 
@@ -47,7 +47,7 @@ import time
 from salt.exceptions import CommandExecutionError
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -298,8 +298,11 @@ def __process_tokens_internal(tokens, start_at=0):
         elif __is_assignment(token):
             log.debug("    TYPE: ASSIGNMENT")
             is_assignment = True
+        elif __is_expression(token):
+            log.debug("    TYPE: EXPRESSION")
+            is_expression = True
         else:
-            raise CommandExecutionError('Unknown token!', 'Token:'+token)
+            raise CommandExecutionError('Unknown token! Token: {0}'.format(token))
 
         token_no = token_no + 1
 
@@ -372,3 +375,7 @@ def __get_quoted_string(token):
 
 def __is_assignment(token):
     return token == '=>'
+
+
+def __is_expression(token):
+    return token == 'expression'

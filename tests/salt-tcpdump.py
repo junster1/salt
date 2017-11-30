@@ -33,12 +33,12 @@ tcpdump "tcp[tcpflags] & tcp-syn != 0" and port 4505 and "tcp[tcpflags] & tcp-ac
 For Port 4506
 tcpdump "tcp[tcpflags] & tcp-syn != 0" and port 4506 and "tcp[tcpflags] & tcp-ack == 0"
 '''
-
+# pylint: disable=resource-leakage
 # Import Python Libs
 from __future__ import absolute_import, print_function
 import socket
 from struct import unpack
-import pcapy
+import pcapy  # pylint: disable=import-error,3rd-party-module-not-gated
 import sys
 import argparse  # pylint: disable=minimum-python-version
 import time
@@ -124,7 +124,7 @@ class PCAPParser(object):
                            'tcp': {}
                           }
 
-            (header, packet) = cap.next()  # pylint: disable=W1699
+            (header, packet) = cap.next()  # pylint: disable=incompatible-py3-code
 
             eth_length, eth_protocol = self.parse_ether(packet)
 
@@ -371,17 +371,17 @@ def main():
             }
 
     if args['only_ip']:
-        print (
+        print(
                'IPs making new connections '
                '(ports:{0}, interval:{1})'.format(ports,
                                                   args['ival'])
-              )
+             )
     else:
-        print (
+        print(
                'Salt-Master Network Status '
                '(ports:{0}, interval:{1})'.format(ports,
                                                   args['ival'])
-              )
+             )
     try:
         while 1:
             s_time = int(time.time())

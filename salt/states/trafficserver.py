@@ -6,12 +6,18 @@ Control Apache Traffic Server
 .. versionadded:: 2015.8.0
 '''
 
+# Import Python libs
+from __future__ import absolute_import
+
+# Import Salt libs
+import salt.utils.versions
+
 
 def __virtual__():
     '''
     Only load if the Traffic Server module is available in __salt__
     '''
-    return 'trafficserver' if 'trafficserver.set_var' in __salt__ else False
+    return 'trafficserver' if 'trafficserver.set_config' in __salt__ else False
 
 
 def bounce_cluster(name):
@@ -196,20 +202,20 @@ def restart_local(name, drain=False):
         return ret
 
 
-def set_var(name, value):
+def config(name, value):
     '''
-    Set Traffic Server variable values
+    Set Traffic Server configuration variable values.
 
     .. code-block:: yaml
 
         proxy.config.proxy_name:
-          trafficserver.set_var:
+          trafficserver.config:
             - value: cdn.site.domain.tld
 
         OR
 
         traffic_server_setting:
-          trafficserver.set_var:
+          trafficserver.config:
             - name: proxy.config.proxy_name
             - value: cdn.site.domain.tld
 
@@ -226,11 +232,40 @@ def set_var(name, value):
         )
         return ret
 
-    __salt__['trafficserver.set_var'](name, value)
+    __salt__['trafficserver.set_config'](name, value)
 
     ret['result'] = True
     ret['comment'] = 'Configured {0} to {1}'.format(name, value)
     return ret
+
+
+def set_var(name, value):
+    '''
+    Set Traffic Server configuration variable values.
+
+    .. deprecated:: Fluorine
+        Use ``trafficserver.config`` instead.
+
+    .. code-block:: yaml
+
+        proxy.config.proxy_name:
+          trafficserver.set_var:
+            - value: cdn.site.domain.tld
+
+        OR
+
+        traffic_server_setting:
+          trafficserver.set_var:
+            - name: proxy.config.proxy_name
+            - value: cdn.site.domain.tld
+
+    '''
+    salt.utils.versions.warn_until(
+        'Fluorine',
+        'The \'set_var\' function has been deprecated and will be removed in Salt '
+        '{version}. Please use \'trafficserver.config\' instead.'
+    )
+    return config(name, value)
 
 
 def shutdown(name):

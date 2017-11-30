@@ -15,10 +15,12 @@ import datetime
 # Import salt libs
 import salt.log
 import salt.crypt
+import salt.transport.frame
+import salt.utils.immutabletypes as immutabletypes
 from salt.exceptions import SaltReqTimeoutError
 
 # Import third party libs
-import salt.ext.six as six
+from salt.ext import six
 try:
     import zmq
 except ImportError:
@@ -44,15 +46,15 @@ except ImportError:
     except ImportError:
         # TODO: Come up with a sane way to get a configured logfile
         #       and write to the logfile when this error is hit also
-        LOG_FORMAT = '[%(levelname)-8s] %(message)s'
+        LOG_FORMAT = u'[%(levelname)-8s] %(message)s'
         salt.log.setup_console_logger(log_format=LOG_FORMAT)
-        log.fatal('Unable to import msgpack or msgpack_pure python modules')
+        log.fatal(u'Unable to import msgpack or msgpack_pure python modules')
         # Don't exit if msgpack is not available, this is to make local mode
         # work without msgpack
         #sys.exit(salt.defaults.exitcodes.EX_GENERIC)
 
 
-if HAS_MSGPACK and not hasattr(msgpack, 'exceptions'):
+if HAS_MSGPACK and not hasattr(msgpack, u'exceptions'):
     class PackValueError(Exception):
         '''
         older versions of msgpack do not have PackValueError
@@ -87,11 +89,11 @@ def format_payload(enc, **kwargs):
     Pass in the required arguments for a payload, the enc type and the cmd,
     then a list of keyword args to generate the body of the load dict.
     '''
-    payload = {'enc': enc}
+    payload = {u'enc': enc}
     load = {}
     for key in kwargs:
         load[key] = kwargs[key]
-    payload['load'] = load
+    payload[u'load'] = load
     return package(payload)
 
 
@@ -102,26 +104,54 @@ class Serial(object):
     '''
     def __init__(self, opts):
         if isinstance(opts, dict):
-            self.serial = opts.get('serial', 'msgpack')
-        elif isinstance(opts, str):
+            self.serial = opts.get(u'serial', u'msgpack')
+        elif isinstance(opts, six.string_types):
             self.serial = opts
         else:
-            self.serial = 'msgpack'
+            self.serial = u'msgpack'
 
-    def loads(self, msg):
+    def loads(self, msg, encoding=None, raw=False):
         '''
         Run the correct loads serialization format
+
+        :param encoding: Useful for Python 3 support. If the msgpack data
+                         was encoded using "use_bin_type=True", this will
+                         differentiate between the 'bytes' type and the
+                         'str' type by decoding contents with 'str' type
+                         to what the encoding was set as. Recommended
+                         encoding is 'utf-8' when using Python 3.
+                         If the msgpack data was not encoded using
+                         "use_bin_type=True", it will try to decode
+                         all 'bytes' and 'str' data (the distinction has
+                         been lost in this case) to what the encoding is
+                         set as. In this case, it will fail if any of
+                         the contents cannot be converted.
         '''
         try:
             gc.disable()  # performance optimization for msgpack
-            return msgpack.loads(msg, use_list=True)
+            if msgpack.version >= (0, 4, 0):
+                # msgpack only supports 'encoding' starting in 0.4.0.
+                # Due to this, if we don't need it, don't pass it at all so
+                # that under Python 2 we can still work with older versions
+                # of msgpack.
+                ret = msgpack.loads(msg, use_list=True, encoding=encoding)
+            else:
+                ret = msgpack.loads(msg, use_list=True)
+            if six.PY3 and encoding is None and not raw:
+                ret = salt.transport.frame.decode_embedded_strs(ret)
         except Exception as exc:
-            log.critical('Could not deserialize msgpack message: {0}'
-                         'This often happens when trying to read a file not in binary mode.'
-                         'Please open an issue and include the following error: {1}'.format(msg, exc))
+            log.critical(
+                u'Could not deserialize msgpack message. This often happens '
+                u'when trying to read a file not in binary mode. '
+                u'To see message payload, enable debug logging and retry. '
+                u'Exception: %s', exc
+            )
+            log.debug(u'Msgpack deserialization failure on message: %s', msg)
+            gc.collect()
             raise
         finally:
             gc.enable()
+        return ret
 
     def load(self, fn_):
         '''
@@ -130,14 +160,30 @@ class Serial(object):
         data = fn_.read()
         fn_.close()
         if data:
-            return self.loads(data)
+            if six.PY3:
+                return self.loads(data, encoding=u'utf-8')
+            else:
+                return self.loads(data)
 
-    def dumps(self, msg):
+    def dumps(self, msg, use_bin_type=False):
         '''
         Run the correct dumps serialization format
+
+        :param use_bin_type: Useful for Python 3 support. Tells msgpack to
+                             differentiate between 'str' and 'bytes' types
+                             by encoding them differently.
+                             Since this changes the wire protocol, this
+                             option should not be used outside of IPC.
         '''
         try:
-            return msgpack.dumps(msg)
+            if msgpack.version >= (0, 4, 0):
+                # msgpack only supports 'use_bin_type' starting in 0.4.0.
+                # Due to this, if we don't need it, don't pass it at all so
+                # that under Python 2 we can still work with older versions
+                # of msgpack.
+                return msgpack.dumps(msg, use_bin_type=use_bin_type)
+            else:
+                return msgpack.dumps(msg)
         except (OverflowError, msgpack.exceptions.PackValueError):
             # msgpack can't handle the very long Python longs for jids
             # Convert any very long longs to strings
@@ -152,13 +198,18 @@ class Serial(object):
                     for idx, entry in enumerate(obj):
                         obj[idx] = verylong_encoder(entry)
                     return obj
+                # This is a spurious lint failure as we are gating this check
+                # behind a check for six.PY2.
                 if six.PY2 and isinstance(obj, long) and long > pow(2, 64):  # pylint: disable=incompatible-py3-code
                     return str(obj)
                 elif six.PY3 and isinstance(obj, int) and int > pow(2, 64):
                     return str(obj)
                 else:
                     return obj
-            return msgpack.dumps(verylong_encoder(msg))
+            if msgpack.version >= (0, 4, 0):
+                return msgpack.dumps(verylong_encoder(msg), use_bin_type=use_bin_type)
+            else:
+                return msgpack.dumps(verylong_encoder(msg))
         except TypeError as e:
             # msgpack doesn't support datetime.datetime datatype
             # So here we have converted datetime.datetime to custom datatype
@@ -167,12 +218,19 @@ class Serial(object):
                 return msgpack.ExtType(78, obj)
 
             def dt_encode(obj):
-                datetime_str = obj.strftime("%Y%m%dT%H:%M:%S.%f")
-                return msgpack.packb(datetime_str, default=default)
+                datetime_str = obj.strftime(u"%Y%m%dT%H:%M:%S.%f")
+                if msgpack.version >= (0, 4, 0):
+                    return msgpack.packb(datetime_str, default=default, use_bin_type=use_bin_type)
+                else:
+                    return msgpack.packb(datetime_str, default=default)
 
             def datetime_encoder(obj):
                 if isinstance(obj, dict):
                     for key, value in six.iteritems(obj.copy()):
+                        encodedkey = datetime_encoder(key)
+                        if key != encodedkey:
+                            del obj[key]
+                            key = encodedkey
                         obj[key] = datetime_encoder(value)
                     return dict(obj)
                 elif isinstance(obj, (list, tuple)):
@@ -185,8 +243,25 @@ class Serial(object):
                 else:
                     return obj
 
-            if "datetime.datetime" in str(e):
-                return msgpack.dumps(datetime_encoder(msg))
+            def immutable_encoder(obj):
+                log.debug(u'IMMUTABLE OBJ: %s', obj)
+                if isinstance(obj, immutabletypes.ImmutableDict):
+                    return dict(obj)
+                if isinstance(obj, immutabletypes.ImmutableList):
+                    return list(obj)
+                if isinstance(obj, immutabletypes.ImmutableSet):
+                    return set(obj)
+
+            if u"datetime.datetime" in str(e):
+                if msgpack.version >= (0, 4, 0):
+                    return msgpack.dumps(datetime_encoder(msg), use_bin_type=use_bin_type)
+                else:
+                    return msgpack.dumps(datetime_encoder(msg))
+            elif u"Immutable" in str(e):
+                if msgpack.version >= (0, 4, 0):
+                    return msgpack.dumps(msg, default=immutable_encoder, use_bin_type=use_bin_type)
+                else:
+                    return msgpack.dumps(msg, default=immutable_encoder)
 
             if msgpack.version >= (0, 2, 0):
                 # Should support OrderedDict serialization, so, let's
@@ -210,17 +285,27 @@ class Serial(object):
                         obj[idx] = odict_encoder(entry)
                     return obj
                 return obj
-            return msgpack.dumps(odict_encoder(msg))
-        except (SystemError, TypeError) as exc:
-            log.critical('Unable to serialize message! Consider upgrading msgpack. '
-                         'Message which failed was {failed_message} '
-                         'with exception {exception_message}').format(msg, exc)
+            if msgpack.version >= (0, 4, 0):
+                return msgpack.dumps(odict_encoder(msg), use_bin_type=use_bin_type)
+            else:
+                return msgpack.dumps(odict_encoder(msg))
+        except (SystemError, TypeError) as exc:  # pylint: disable=W0705
+            log.critical(
+                u'Unable to serialize message! Consider upgrading msgpack. '
+                u'Message which failed was %s, with exception %s', msg, exc
+            )
 
     def dump(self, msg, fn_):
         '''
         Serialize the correct data into the named file object
         '''
-        fn_.write(self.dumps(msg))
+        if six.PY2:
+            fn_.write(self.dumps(msg))
+        else:
+            # When using Python 3, write files in such a way
+            # that the 'bytes' and 'str' types are distinguishable
+            # by using "use_bin_type=True".
+            fn_.write(self.dumps(msg, use_bin_type=True))
         fn_.close()
 
 
@@ -228,7 +313,7 @@ class SREQ(object):
     '''
     Create a generic interface to wrap salt zeromq req calls.
     '''
-    def __init__(self, master, id_='', serial='msgpack', linger=0, opts=None):
+    def __init__(self, master, id_=u'', serial=u'msgpack', linger=0, opts=None):
         self.master = master
         self.id_ = id_
         self.serial = Serial(serial)
@@ -242,20 +327,20 @@ class SREQ(object):
         '''
         Lazily create the socket.
         '''
-        if not hasattr(self, '_socket'):
+        if not hasattr(self, u'_socket'):
             # create a new one
             self._socket = self.context.socket(zmq.REQ)
-            if hasattr(zmq, 'RECONNECT_IVL_MAX'):
+            if hasattr(zmq, u'RECONNECT_IVL_MAX'):
                 self._socket.setsockopt(
                     zmq.RECONNECT_IVL_MAX, 5000
                 )
 
             self._set_tcp_keepalive()
-            if self.master.startswith('tcp://['):
+            if self.master.startswith(u'tcp://['):
                 # Hint PF type if bracket enclosed IPv6 address
-                if hasattr(zmq, 'IPV6'):
+                if hasattr(zmq, u'IPV6'):
                     self._socket.setsockopt(zmq.IPV6, 1)
-                elif hasattr(zmq, 'IPV4ONLY'):
+                elif hasattr(zmq, u'IPV4ONLY'):
                     self._socket.setsockopt(zmq.IPV4ONLY, 0)
             self._socket.linger = self.linger
             if self.id_:
@@ -264,37 +349,37 @@ class SREQ(object):
         return self._socket
 
     def _set_tcp_keepalive(self):
-        if hasattr(zmq, 'TCP_KEEPALIVE') and self.opts:
-            if 'tcp_keepalive' in self.opts:
+        if hasattr(zmq, u'TCP_KEEPALIVE') and self.opts:
+            if u'tcp_keepalive' in self.opts:
                 self._socket.setsockopt(
-                    zmq.TCP_KEEPALIVE, self.opts['tcp_keepalive']
+                    zmq.TCP_KEEPALIVE, self.opts[u'tcp_keepalive']
                 )
-            if 'tcp_keepalive_idle' in self.opts:
+            if u'tcp_keepalive_idle' in self.opts:
                 self._socket.setsockopt(
-                    zmq.TCP_KEEPALIVE_IDLE, self.opts['tcp_keepalive_idle']
+                    zmq.TCP_KEEPALIVE_IDLE, self.opts[u'tcp_keepalive_idle']
                 )
-            if 'tcp_keepalive_cnt' in self.opts:
+            if u'tcp_keepalive_cnt' in self.opts:
                 self._socket.setsockopt(
-                    zmq.TCP_KEEPALIVE_CNT, self.opts['tcp_keepalive_cnt']
+                    zmq.TCP_KEEPALIVE_CNT, self.opts[u'tcp_keepalive_cnt']
                 )
-            if 'tcp_keepalive_intvl' in self.opts:
+            if u'tcp_keepalive_intvl' in self.opts:
                 self._socket.setsockopt(
-                    zmq.TCP_KEEPALIVE_INTVL, self.opts['tcp_keepalive_intvl']
+                    zmq.TCP_KEEPALIVE_INTVL, self.opts[u'tcp_keepalive_intvl']
                 )
 
     def clear_socket(self):
         '''
         delete socket if you have it
         '''
-        if hasattr(self, '_socket'):
+        if hasattr(self, u'_socket'):
             if isinstance(self.poller.sockets, dict):
                 sockets = list(self.poller.sockets.keys())
                 for socket in sockets:
-                    log.trace('Unregistering socket: {0}'.format(socket))
+                    log.trace(u'Unregistering socket: %s', socket)
                     self.poller.unregister(socket)
             else:
                 for socket in self.poller.sockets:
-                    log.trace('Unregistering socket: {0}'.format(socket))
+                    log.trace(u'Unregistering socket: %s', socket)
                     self.poller.unregister(socket[0])
             del self._socket
 
@@ -302,8 +387,8 @@ class SREQ(object):
         '''
         Takes two arguments, the encryption type and the base payload
         '''
-        payload = {'enc': enc}
-        payload['load'] = load
+        payload = {u'enc': enc}
+        payload[u'load'] = load
         pkg = self.serial.dumps(payload)
         self.socket.send(pkg)
         self.poller.register(self.socket, zmq.POLLIN)
@@ -314,12 +399,15 @@ class SREQ(object):
             if polled:
                 break
             if tries > 1:
-                log.info('SaltReqTimeoutError: after {0} seconds. (Try {1} of {2})'.format(
-                  timeout, tried, tries))
+                log.info(
+                    u'SaltReqTimeoutError: after %s seconds. (Try %s of %s)',
+                    timeout, tried, tries
+                )
             if tried >= tries:
                 self.clear_socket()
                 raise SaltReqTimeoutError(
-                    'SaltReqTimeoutError: after {0} seconds, ran {1} tries'.format(timeout * tried, tried)
+                    u'SaltReqTimeoutError: after {0} seconds, ran {1} '
+                    u'tries'.format(timeout * tried, tried)
                 )
         return self.serial.loads(self.socket.recv())
 
@@ -327,8 +415,8 @@ class SREQ(object):
         '''
         Detect the encryption type based on the payload
         '''
-        enc = payload.get('enc', 'clear')
-        load = payload.get('load', {})
+        enc = payload.get(u'enc', u'clear')
+        load = payload.get(u'load', {})
         return self.send(enc, load, tries, timeout)
 
     def destroy(self):

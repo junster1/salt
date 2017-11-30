@@ -29,7 +29,7 @@ import time
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 from salt.ext.six.moves import range
 
 __virtualname__ = 'blockdev'
@@ -40,12 +40,12 @@ log = logging.getLogger(__name__)
 
 def __virtual__():
     '''
-    Only load this module if the blockdev execution module is available
+    Only load this module if the disk execution module is available
     '''
-    if 'blockdev.tune' in __salt__:
+    if 'disk.tune' in __salt__:
         return __virtualname__
     return (False, ('Cannot load the {0} state module: '
-                    'blockdev execution module not found'.format(__virtualname__)))
+                    'disk execution module not found'.format(__virtualname__)))
 
 
 def tuned(name, **kwargs):
@@ -87,8 +87,8 @@ def tuned(name, **kwargs):
         ret['result'] = None
         return ret
     else:
-        current = __salt__['blockdev.dump'](name)
-        changes = __salt__['blockdev.tune'](name, **kwargs)
+        current = __salt__['disk.dump'](name)
+        changes = __salt__['disk.tune'](name, **kwargs)
         changeset = {}
         for key in kwargs:
             if key in kwarg_map:
@@ -117,7 +117,7 @@ def tuned(name, **kwargs):
     return ret
 
 
-def formatted(name, fs_type='ext4', **kwargs):
+def formatted(name, fs_type='ext4', force=False, **kwargs):
     '''
     Manage filesystems of partitions.
 
@@ -126,6 +126,15 @@ def formatted(name, fs_type='ext4', **kwargs):
 
     fs_type
         The filesystem it should be formatted as
+
+    force
+        Force mke2fs to create a filesystem, even if the specified device is
+        not a partition on a block special device. This option is only enabled
+        for ext and xfs filesystems
+
+        This option is dangerous, use it with caution.
+
+        .. versionadded:: 2016.11.0
     '''
     ret = {'changes': {},
            'comment': '{0} already formatted with {1}'.format(name, fs_type),
@@ -141,7 +150,7 @@ def formatted(name, fs_type='ext4', **kwargs):
     if current_fs == fs_type:
         ret['result'] = True
         return ret
-    elif not salt.utils.which('mkfs.{0}'.format(fs_type)):
+    elif not salt.utils.path.which('mkfs.{0}'.format(fs_type)):
         ret['comment'] = 'Invalid fs_type: {0}'.format(fs_type)
         ret['result'] = False
         return ret
@@ -150,12 +159,12 @@ def formatted(name, fs_type='ext4', **kwargs):
         ret['result'] = None
         return ret
 
-    __salt__['blockdev.format'](name, fs_type, **kwargs)
-    current_fs = __salt__['blockdev.fstype'](name)
+    __salt__['disk.format'](name, fs_type, force=force, **kwargs)
 
-    # Repeat lsblk check up to 10 times with 3s sleeping between each
-    # to avoid lsblk failing although mkfs has succeeded
-    # see https://github.com/saltstack/salt/issues/25775
+    # Repeat fstype check up to 10 times with 3s sleeping between each
+    # to avoid detection failing although mkfs has succeeded
+    # see https://github.com/saltstack/salt/issues/25775i
+    # This retry maybe superfluous - switching to blkid
     for i in range(10):
 
         log.info('Check blk fstype attempt %s of 10', str(i+1))
@@ -184,5 +193,5 @@ def _checkblk(name):
     Check if the blk exists and return its fstype if ok
     '''
 
-    blk = __salt__['cmd.run']('lsblk -o fstype {0}'.format(name)).splitlines()
-    return '' if len(blk) == 1 else blk[1]
+    blk = __salt__['cmd.run']('blkid -o value -s TYPE {0}'.format(name))
+    return '' if not blk else blk

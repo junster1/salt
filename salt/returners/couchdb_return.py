@@ -33,7 +33,7 @@ To use the alternative configuration, append ``--return_config alternative`` to 
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -42,7 +42,7 @@ To override individual configuration items, append --return_kwargs '{"key:": "va
 On concurrent database access
 ==============================
 
-As this returner creates a couchdb document whith the salt job id as document id
+As this returner creates a couchdb document with the salt job id as document id
 and as only one document with a given id can exist in a given couchdb database,
 it is advised for most setups that every minion be configured to write to it own
 database (the value of ``couchdb.db`` may be suffixed with the minion id),
@@ -364,4 +364,11 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''
-    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid(__opts__)
+
+
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass

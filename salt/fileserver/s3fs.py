@@ -68,12 +68,14 @@ import logging
 # Import salt libs
 import salt.fileserver as fs
 import salt.modules
-import salt.utils
-import salt.utils.s3 as s3
+import salt.utils.files
+import salt.utils.gzip_util
+import salt.utils.hashutils
+import salt.utils.versions
 
 # Import 3rd-party libs
 # pylint: disable=import-error,no-name-in-module,redefined-builtin
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import filter
 from salt.ext.six.moves.urllib.parse import quote as _quote
 # pylint: enable=import-error,no-name-in-module,redefined-builtin
@@ -117,20 +119,15 @@ def update():
         log.info('Sync local cache from S3 completed.')
 
 
-def find_file(path, saltenv='base', env=None, **kwargs):
+def find_file(path, saltenv='base', **kwargs):
     '''
     Look through the buckets cache file for a match.
     If the field is found, it is retrieved from S3 only if its cached version
     is missing, or if the MD5 does not match.
     '''
-    if env is not None:
-        salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        # Backwards compatibility
-        saltenv = env
+    if 'env' in kwargs:
+        # "env" is not supported; Use "saltenv".
+        kwargs.pop('env')
 
     fnd = {'bucket': None,
            'path': None}
@@ -166,12 +163,8 @@ def file_hash(load, fnd):
     Return an MD5 file hash
     '''
     if 'env' in load:
-        salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+        # "env" is not supported; Use "saltenv".
+        load.pop('env')
 
     ret = {}
 
@@ -187,7 +180,7 @@ def file_hash(load, fnd):
             fnd['path'])
 
     if os.path.isfile(cached_file_path):
-        ret['hsum'] = salt.utils.get_hash(cached_file_path)
+        ret['hsum'] = salt.utils.hashutils.get_hash(cached_file_path)
         ret['hash_type'] = 'md5'
 
     return ret
@@ -198,12 +191,8 @@ def serve_file(load, fnd):
     Return a chunk from a file based on the data received
     '''
     if 'env' in load:
-        salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+        # "env" is not supported; Use "saltenv".
+        load.pop('env')
 
     ret = {'data': '',
            'dest': ''}
@@ -224,9 +213,11 @@ def serve_file(load, fnd):
 
     ret['dest'] = _trim_env_off_path([fnd['path']], load['saltenv'])[0]
 
-    with salt.utils.fopen(cached_file_path, 'rb') as fp_:
+    with salt.utils.files.fopen(cached_file_path, 'rb') as fp_:
         fp_.seek(load['loc'])
         data = fp_.read(__opts__['file_buffer_size'])
+        if data and six.PY3 and not salt.utils.files.is_binary(cached_file_path):
+            data = data.decode(__salt_system_encoding__)
         if gzip and data:
             data = salt.utils.gzip_util.compress(data, gzip)
             ret['gzip'] = gzip
@@ -239,12 +230,8 @@ def file_list(load):
     Return a list of all files on the file server in a specified environment
     '''
     if 'env' in load:
-        salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+        # "env" is not supported; Use "saltenv".
+        load.pop('env')
 
     ret = []
 
@@ -279,12 +266,8 @@ def dir_list(load):
     Return a list of all directories on the master
     '''
     if 'env' in load:
-        salt.utils.warn_until(
-            'Boron',
-            'Passing a salt environment should be done using \'saltenv\' '
-            'not \'env\'. This functionality will be removed in Salt Boron.'
-        )
-        load['saltenv'] = load.pop('env')
+        # "env" is not supported; Use "saltenv".
+        load.pop('env')
 
     ret = []
 
@@ -324,8 +307,14 @@ def _get_s3_key():
     location = __opts__['s3.location'] \
         if 's3.location' in __opts__ \
         else None
+    path_style = __opts__['s3.path_style'] \
+        if 's3.path_style' in __opts__ \
+        else None
+    https_enable = __opts__['s3.https_enable'] \
+        if 's3.https_enable' in __opts__ \
+        else None
 
-    return key, keyid, service_url, verify_ssl, kms_keyid, location
+    return key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable
 
 
 def _init():
@@ -395,20 +384,34 @@ def _refresh_buckets_cache_file(cache_file):
 
     log.debug('Refreshing buckets cache file')
 
-    key, keyid, service_url, verify_ssl, kms_keyid, location = _get_s3_key()
+    key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable = _get_s3_key()
     metadata = {}
 
     # helper s3 query function
     def __get_s3_meta(bucket, key=key, keyid=keyid):
-        return s3.query(
-                key=key,
-                keyid=keyid,
-                kms_keyid=keyid,
-                bucket=bucket,
-                service_url=service_url,
-                verify_ssl=verify_ssl,
-                location=location,
-                return_bin=False)
+        ret, marker = [], ''
+        while True:
+            tmp = __utils__['s3.query'](key=key,
+                                        keyid=keyid,
+                                        kms_keyid=keyid,
+                                        bucket=bucket,
+                                        service_url=service_url,
+                                        verify_ssl=verify_ssl,
+                                        location=location,
+                                        return_bin=False,
+                                        path_style=path_style,
+                                        https_enable=https_enable,
+                                        params={'marker': marker})
+            headers = []
+            for header in tmp:
+                if 'Key' in header:
+                    break
+                headers.append(header)
+            ret.extend(tmp)
+            if all([header.get('IsTruncated', 'false') == 'false' for header in headers]):
+                break
+            marker = tmp[-1]['Key']
+        return ret
 
     if _is_env_per_bucket():
         # Single environment per bucket
@@ -445,8 +448,8 @@ def _refresh_buckets_cache_file(cache_file):
                             continue
                         else:
                             log.warning(
-                                ('S3 Error! Do you have any files '
-                                 'in your S3 bucket?'))
+                                 'S3 Error! Do you have any files '
+                                 'in your S3 bucket?')
                             return {}
 
             metadata[saltenv] = bucket_files
@@ -484,8 +487,8 @@ def _refresh_buckets_cache_file(cache_file):
                         continue
                     else:
                         log.warning(
-                            ('S3 Error! Do you have any files '
-                             'in your S3 bucket?'))
+                             'S3 Error! Do you have any files '
+                             'in your S3 bucket?')
                         return {}
 
             environments = [(os.path.dirname(k['Key']).split('/', 1))[0] for k in files]
@@ -510,7 +513,7 @@ def _refresh_buckets_cache_file(cache_file):
 
     log.debug('Writing buckets cache file')
 
-    with salt.utils.fopen(cache_file, 'w') as fp_:
+    with salt.utils.files.fopen(cache_file, 'w') as fp_:
         pickle.dump(metadata, fp_)
 
     return metadata
@@ -523,7 +526,7 @@ def _read_buckets_cache_file(cache_file):
 
     log.debug('Reading buckets cache file')
 
-    with salt.utils.fopen(cache_file, 'rb') as fp_:
+    with salt.utils.files.fopen(cache_file, 'rb') as fp_:
         try:
             data = pickle.load(fp_)
         except (pickle.UnpicklingError, AttributeError, EOFError, ImportError,
@@ -606,7 +609,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
     Checks the local cache for the file, if it's old or missing go grab the
     file from S3 and update the cache
     '''
-    key, keyid, service_url, verify_ssl, kms_keyid, location = _get_s3_key()
+    key, keyid, service_url, verify_ssl, kms_keyid, location, path_style, https_enable = _get_s3_key()
 
     # check the local cache...
     if os.path.isfile(cached_file_path):
@@ -616,7 +619,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
 
             if file_etag.find('-') == -1:
                 file_md5 = file_etag
-                cached_md5 = salt.utils.get_hash(cached_file_path, 'md5')
+                cached_md5 = salt.utils.hashutils.get_hash(cached_file_path, 'md5')
 
                 # hashes match we have a cache hit
                 if cached_md5 == file_md5:
@@ -634,7 +637,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                     log.debug('cached file size equal to metadata size and '
                               'cached file mtime later than metadata last '
                               'modification time.')
-                    ret = s3.query(
+                    ret = __utils__['s3.query'](
                         key=key,
                         keyid=keyid,
                         kms_keyid=keyid,
@@ -645,7 +648,9 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                         location=location,
                         path=_quote(path),
                         local_file=cached_file_path,
-                        full_headers=True
+                        full_headers=True,
+                        path_style=path_style,
+                        https_enable=https_enable
                     )
                     if ret is not None:
                         for header_name, header_value in ret['headers'].items():
@@ -665,7 +670,7 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
                             return
 
     # ... or get the file from S3
-    s3.query(
+    __utils__['s3.query'](
         key=key,
         keyid=keyid,
         kms_keyid=keyid,
@@ -674,7 +679,9 @@ def _get_file_from_s3(metadata, saltenv, bucket_name, path, cached_file_path):
         verify_ssl=verify_ssl,
         location=location,
         path=_quote(path),
-        local_file=cached_file_path
+        local_file=cached_file_path,
+        path_style=path_style,
+        https_enable=https_enable,
     )
 
 

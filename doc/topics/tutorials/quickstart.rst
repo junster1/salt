@@ -1,3 +1,5 @@
+.. _masterless-quickstart:
+
 ==========================
 Salt Masterless Quickstart
 ==========================
@@ -29,8 +31,8 @@ for any OS with a Bourne shell:
 
 .. code-block:: bash
 
-    curl -L https://bootstrap.saltstack.com -o install_salt.sh
-    sudo sh install_salt.sh
+    curl -L https://bootstrap.saltstack.com -o bootstrap_salt.sh
+    sudo sh bootstrap_salt.sh
 
 
 See the `salt-bootstrap`_ documentation for other one liners. When using `Vagrant`_
@@ -54,8 +56,8 @@ Now the salt minion will not look for a master and will assume that the local
 system has all of the file and pillar resources.
 
 Configuration which resided in the
-:doc:`master configuration </ref/configuration/master>` (e.g. ``/etc/salt/master``)
-should be moved to the :doc:`minion configuration </ref/configuration/minion>`
+:ref:`master configuration <configuration-salt-master>` (e.g. ``/etc/salt/master``)
+should be moved to the :ref:`minion configuration <configuration-salt-minion>`
 since the minion does not read the master configuration.
 
 .. note::
@@ -76,7 +78,7 @@ ensures that the server has the Apache webserver installed.
 
 .. note::
     For a complete explanation on Salt States, see the `tutorial
-    <http://docs.saltstack.org/en/latest/topics/tutorials/states_pt1.html>`_.
+    <http://docs.saltstack.com/en/latest/topics/tutorials/states_pt1.html>`_.
 
 1. Create the ``top.sls`` file:
 
@@ -104,21 +106,20 @@ ensures that the server has the Apache webserver installed.
     instance on Debian/Ubuntu it is apache2, on Fedora/RHEL it is httpd
     and on Arch it is apache
 
-The only thing left is to provision our minion using salt-call and the
-highstate command.
+The only thing left is to provision our minion using ``salt-call``.
 
 Salt-call
 ---------
 
-The salt-call command is used to run module functions locally on a minion
-instead of executing them from the master. Normally the salt-call command
-checks into the master to retrieve file server and pillar data, but when
-running standalone salt-call needs to be instructed to not check the master for
-this data:
+The salt-call command is used to run remote execution functions locally on a
+minion instead of executing them from the master. Normally the salt-call
+command checks into the master to retrieve file server and pillar data, but
+when running standalone salt-call needs to be instructed to not check the
+master for this data:
 
 .. code-block:: bash
 
-    salt-call --local state.highstate
+    salt-call --local state.apply
 
 The ``--local`` flag tells the salt-minion to look for the state tree in the
 local file system and not to contact a Salt Master for instructions.
@@ -127,7 +128,7 @@ To provide verbose output, use ``-l debug``:
 
 .. code-block:: bash
 
-    salt-call --local state.highstate -l debug
+    salt-call --local state.apply -l debug
 
 The minion first examines the ``top.sls`` file and determines that it is a part
 of the group matched by ``*`` glob and that the ``webserver`` SLS should be applied.
@@ -136,5 +137,4 @@ It then examines the ``webserver.sls`` file and finds the ``apache`` state, whic
 installs the Apache package.
 
 The minion should now have Apache installed, and the next step is to begin
-learning how to write
-:doc:`more complex states</topics/tutorials/states_pt1>`.
+learning how to write :ref:`more complex states<states-tutorial>`.

@@ -11,11 +11,13 @@ from __future__ import absolute_import
 import logging
 
 # Import Salt libs
-import salt.utils
+import salt.utils.args
+import salt.utils.path
 import salt.modules.cmdmod
 import salt.utils.decorators as decorators
 from salt.utils.odict import OrderedDict
 
+__virtualname__ = 'zfs'
 log = logging.getLogger(__name__)
 
 # Function alias to set mapping.
@@ -24,13 +26,23 @@ __func_alias__ = {
 }
 
 
+def __virtual__():
+    '''
+    Only load when the platform has zfs support
+    '''
+    if __grains__['zfs_support']:
+        return __virtualname__
+    else:
+        return (False, "The zfs module cannot be loaded: zfs not supported")
+
+
 @decorators.memoize
 def _check_zfs():
     '''
     Looks to see if zfs is present on the system.
     '''
     # Get the path to the zfs binary.
-    return salt.utils.which('zfs')
+    return salt.utils.path.which('zfs')
 
 
 @decorators.memoize
@@ -39,7 +51,7 @@ def _check_features():
     Looks to see if zpool-features is available
     '''
     # get man location
-    man = salt.utils.which('man')
+    man = salt.utils.path.which('man')
     if not man:
         return False
 
@@ -48,34 +60,6 @@ def _check_features():
     )
     res = __salt__['cmd.run_all'](cmd, python_shell=False)
     return res['retcode'] == 0
-
-
-def __virtual__():
-    '''
-    Makes sure that ZFS kernel module is loaded.
-    '''
-    on_freebsd = __grains__['kernel'] == 'FreeBSD'
-    on_linux = __grains__['kernel'] == 'Linux'
-    on_solaris = __grains__['kernel'] == 'SunOS' and __grains__['kernelrelease'] == '5.11'
-
-    cmd = ''
-    if on_freebsd:
-        cmd = 'kldstat -q -m zfs'
-    elif on_linux:
-        modinfo = salt.utils.which('modinfo')
-        if modinfo:
-            cmd = '{0} zfs'.format(modinfo)
-        else:
-            cmd = 'ls /sys/module/zfs'
-    elif on_solaris:
-        # not using salt.utils.which('zfs') to keep compatible with others
-        cmd = 'which zfs'
-
-    if cmd and salt.modules.cmdmod.retcode(
-        cmd, output_loglevel='quiet', ignore_retcode=True
-    ) == 0:
-        return 'zfs'
-    return (False, "The zfs module cannot be loaded: zfs not found")
 
 
 def exists(name, **kwargs):
@@ -109,7 +93,7 @@ def exists(name, **kwargs):
 def create(name, **kwargs):
     '''
     .. versionadded:: 2015.5.0
-    .. versionchanged:: Boron
+    .. versionchanged:: 2016.3.0
 
     Create a ZFS File System.
 
@@ -162,7 +146,7 @@ def create(name, **kwargs):
     # create "-o property=value" pairs
     if properties:
         optlist = []
-        for prop in properties.keys():
+        for prop in properties:
             if isinstance(properties[prop], bool):  # salt breaks the on/off/yes/no properties :(
                 properties[prop] = 'on' if properties[prop] else 'off'
 
@@ -248,7 +232,7 @@ def destroy(name, **kwargs):
 def rename(name, new_name, **kwargs):
     '''
     .. versionadded:: 2015.5.0
-    .. versionchanged:: Boron
+    .. versionchanged:: 2016.3.0
 
     Rename or Relocate a ZFS File System.
 
@@ -308,7 +292,7 @@ def rename(name, new_name, **kwargs):
 def list_(name=None, **kwargs):
     '''
     .. versionadded:: 2015.5.0
-    .. versionchanged:: Boron
+    .. versionchanged:: 2016.3.0
 
     Return a list of all datasets or a specified dataset on the system and the
     values of their used, available, referenced, and mountpoint properties.
@@ -320,7 +304,7 @@ def list_(name=None, **kwargs):
     depth : int
         limit recursion to depth
     properties : string
-        comma-seperated list of properties to list, the name property will always be added
+        comma-separated list of properties to list, the name property will always be added
     type : string
         comma-separated list of types to display, where type is one of
         filesystem, snapshot, volume, bookmark, or all.
@@ -395,7 +379,7 @@ def list_(name=None, **kwargs):
 
 def mount(name='-a', **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Mounts ZFS file systems
 
@@ -439,7 +423,7 @@ def mount(name='-a', **kwargs):
 
 def unmount(name, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Unmounts ZFS file systems
 
@@ -480,7 +464,7 @@ def unmount(name, **kwargs):
 
 def inherit(prop, name, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Clears the specified property
 
@@ -528,7 +512,7 @@ def inherit(prop, name, **kwargs):
 
 def diff(name_a, name_b, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Display the difference between a snapshot of a given filesystem and
     another snapshot of that filesystem from a later time or the current
@@ -578,7 +562,7 @@ def diff(name_a, name_b, **kwargs):
 
 def rollback(name, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Roll back the given dataset to a previous snapshot.
 
@@ -643,7 +627,7 @@ def rollback(name, **kwargs):
 
 def clone(name_a, name_b, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Creates a clone of the given snapshot.
 
@@ -685,7 +669,7 @@ def clone(name_a, name_b, **kwargs):
     # create "-o property=value" pairs
     if properties:
         optlist = []
-        for prop in properties.keys():
+        for prop in properties:
             if isinstance(properties[prop], bool):  # salt breaks the on/off/yes/no properties :(
                 properties[prop] = 'on' if properties[prop] else 'off'
             optlist.append('-o {0}={1}'.format(prop, properties[prop]))
@@ -708,7 +692,7 @@ def clone(name_a, name_b, **kwargs):
 
 def promote(name):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Promotes a clone file system to no longer be dependent on its "origin"
     snapshot.
@@ -755,7 +739,7 @@ def promote(name):
 
 def bookmark(snapshot, bookmark):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Creates a bookmark of the given snapshot
 
@@ -811,7 +795,7 @@ def bookmark(snapshot, bookmark):
 
 def holds(snapshot, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Lists all existing user references for the given snapshot or snapshots.
 
@@ -863,7 +847,7 @@ def holds(snapshot, **kwargs):
 
 def hold(tag, *snapshot, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Adds a single reference, named with the tag argument, to the specified
     snapshot or snapshots.
@@ -885,7 +869,7 @@ def hold(tag, *snapshot, **kwargs):
 
     .. note::
 
-        A comma-seperated list can be provided for the tag parameter to hold multiple tags.
+        A comma-separated list can be provided for the tag parameter to hold multiple tags.
 
     CLI Example:
 
@@ -942,7 +926,7 @@ def hold(tag, *snapshot, **kwargs):
 
 def release(tag, *snapshot, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Removes a single reference, named with the tag argument, from the
     specified snapshot or snapshots.
@@ -963,7 +947,7 @@ def release(tag, *snapshot, **kwargs):
 
     .. note::
 
-        A comma-seperated list can be provided for the tag parameter to release multiple tags.
+        A comma-separated list can be provided for the tag parameter to release multiple tags.
 
     CLI Example:
 
@@ -1019,7 +1003,7 @@ def release(tag, *snapshot, **kwargs):
 
 def snapshot(*snapshot, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Creates snapshots with the given names.
 
@@ -1063,7 +1047,7 @@ def snapshot(*snapshot, **kwargs):
     # create "-o property=value" pairs
     if properties:
         optlist = []
-        for prop in properties.keys():
+        for prop in properties:
             if isinstance(properties[prop], bool):  # salt breaks the on/off/yes/no properties :(
                 properties[prop] = 'on' if properties[prop] else 'off'
             optlist.append('-o {0}={1}'.format(prop, properties[prop]))
@@ -1098,7 +1082,7 @@ def snapshot(*snapshot, **kwargs):
 
 def set(*dataset, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Sets the property or list of properties to the given value(s) for each dataset.
 
@@ -1142,7 +1126,7 @@ def set(*dataset, **kwargs):
         ret['error'] = 'one or more snapshots must be specified'
 
     # clean kwargs
-    properties = salt.utils.clean_kwargs(**kwargs)
+    properties = salt.utils.args.clean_kwargs(**kwargs)
     if len(properties) < 1:
         ret['error'] = '{0}one or more properties must be specified'.format(
             '{0},\n'.format(ret['error']) if 'error' in ret else ''
@@ -1153,7 +1137,7 @@ def set(*dataset, **kwargs):
 
     # for better error handling we don't do one big set command
     for ds in dataset:
-        for prop in properties.keys():
+        for prop in properties:
 
             if isinstance(properties[prop], bool):  # salt breaks the on/off/yes/no properties :(
                 properties[prop] = 'on' if properties[prop] else 'off'
@@ -1164,7 +1148,6 @@ def set(*dataset, **kwargs):
                 value=properties[prop],
                 dataset=ds
             ))
-            log.warning(res)
             if ds not in ret:
                 ret[ds] = {}
 
@@ -1180,7 +1163,7 @@ def set(*dataset, **kwargs):
 
 def get(*dataset, **kwargs):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Displays properties for the given datasets.
 
@@ -1193,7 +1176,7 @@ def get(*dataset, **kwargs):
     depth : int
         recursively list children to depth
     fields : string
-        comma-seperated list of fields to include, the name and property field will always be added
+        comma-separated list of fields to include, the name and property field will always be added
     type : string
         comma-separated list of types to display, where type is one of
         filesystem, snapshot, volume, bookmark, or all.
@@ -1277,7 +1260,6 @@ def get(*dataset, **kwargs):
     else:
         ret['error'] = res['stderr'] if 'stderr' in res else res['stdout']
 
-    log.warning(res)
     return ret
 
 # vim: tabstop=4 expandtab shiftwidth=4 softtabstop=4

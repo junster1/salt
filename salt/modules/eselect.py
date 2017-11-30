@@ -7,7 +7,7 @@ from __future__ import absolute_import
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ def __virtual__():
     '''
     Only work on Gentoo systems with eselect installed
     '''
-    if __grains__['os'] == 'Gentoo' and salt.utils.which('eselect'):
+    if __grains__['os'] == 'Gentoo' and salt.utils.path.which('eselect'):
         return 'eselect'
     return (False, 'The eselect execution module cannot be loaded: either the system is not Gentoo or the eselect binary is not in the path.')
 
@@ -89,12 +89,17 @@ def get_modules():
     return modules
 
 
-def get_target_list(module):
+def get_target_list(module, action_parameter=None):
     '''
     List available targets for the given module.
 
     module
         name of the module to be queried for its targets
+
+    action_parameter
+        additional params passed to the defined action
+
+        .. versionadded:: 2016.11.0
 
     CLI Example:
 
@@ -102,7 +107,7 @@ def get_target_list(module):
 
         salt '*' eselect.get_target_list kernel
     '''
-    exec_output = exec_action(module, 'list')
+    exec_output = exec_action(module, 'list', action_parameter=action_parameter)
     if not exec_output:
         return None
 

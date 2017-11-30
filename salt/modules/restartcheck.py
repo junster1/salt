@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 
 HAS_PSUTIL = False
 try:
@@ -126,7 +126,7 @@ def _deleted_files():
         try:
             pinfo = proc.as_dict(attrs=['pid', 'name'])
             try:
-                maps = salt.utils.fopen('/proc/{0}/maps'.format(pinfo['pid']))
+                maps = salt.utils.files.fopen('/proc/{0}/maps'.format(pinfo['pid']))  # pylint: disable=resource-leakage
                 dirpath = '/proc/' + str(pinfo['pid']) + '/fd/'
                 listdir = os.listdir(dirpath)
             except (OSError, IOError):
@@ -142,7 +142,7 @@ def _deleted_files():
                 matched = mapline.match(line)
                 if matched:
                     path = matched.group(2)
-                    if file:
+                    if path:
                         if _valid_deleted_file(path):
                             val = (pinfo['name'], pinfo['pid'], path[0:-10])
                             if val not in deleted_files:
@@ -377,6 +377,8 @@ def restartcheck(ignorelist=None, blacklist=None, excludepid=None, verbose=True)
             packagename = owners_cache[readlink]
         except KeyError:
             packagename = __salt__['pkg.owner'](readlink)
+            if not packagename:
+                packagename = name
             owners_cache[readlink] = packagename
         if packagename and packagename not in ignorelist:
             program = '\t' + str(pid) + ' ' + readlink + ' (file: ' + str(path) + ')'
@@ -390,7 +392,7 @@ def restartcheck(ignorelist=None, blacklist=None, excludepid=None, verbose=True)
     if len(packages) == 0 and not kernel_restart:
         return 'No packages seem to need to be restarted.'
 
-    for package in packages.keys():
+    for package in packages:
         cmd = cmd_pkg_query + package
         paths = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
 
@@ -406,7 +408,7 @@ def restartcheck(ignorelist=None, blacklist=None, excludepid=None, verbose=True)
                pth.find('.wants') == -1:
                 is_oneshot = False
                 try:
-                    servicefile = salt.utils.fopen(pth)
+                    servicefile = salt.utils.files.fopen(pth)  # pylint: disable=resource-leakage
                 except IOError:
                     continue
                 sysfold_len = len(systemd_folder)
@@ -425,7 +427,7 @@ def restartcheck(ignorelist=None, blacklist=None, excludepid=None, verbose=True)
         paths.stdout.close()
 
     # Alternatively, find init.d script or service that match the process name
-    for package in packages.keys():
+    for package in packages:
         if len(packages[package]['systemdservice']) == 0 and len(packages[package]['initscripts']) == 0:
             service = __salt__['service.available'](packages[package]['process_name'])
 
@@ -440,7 +442,7 @@ def restartcheck(ignorelist=None, blacklist=None, excludepid=None, verbose=True)
     restartinitcommands = []
     restartservicecommands = []
 
-    for package in packages.keys():
+    for package in packages:
         if len(packages[package]['initscripts']) > 0:
             restartable.append(package)
             restartinitcommands.extend(['service ' + s + ' restart' for s in packages[package]['initscripts']])

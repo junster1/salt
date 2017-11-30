@@ -37,7 +37,7 @@ coordinate with the assignee via the GitHub issue tracker to create the best pos
     The issue is being actively worked on by a SaltStack engineer.  Sprint milestones names are constructed from the
     chemical symbol of the next release's codename and the number of sprints until that release is made.  For example,
     if the next release codename is ``Neon`` and there are five sprints until that release, the corresponding sprint
-    milestone will be called ``Ne 5``.  See :doc:`<topics/releases/version_numbers>` for a discussion of Salt's release
+    milestone will be called ``Ne 5``.  See :ref:`<version-numbers>` for a discussion of Salt's release
     codenames.
 
 Labels
@@ -274,9 +274,9 @@ with labels.
 ``Awesome``
     The pull request implements an especially well crafted solution, or a very difficult but necessary change.
 
-``Low Hanging Fruit``
-    The issue is trivial or almost trivial to implement or fix.  Issues having this label should be a good starting
-    place for new contributors to Salt.
+``Help Wanted``
+    The issue appears to have a simple solution.  Issues having this label
+    should be a good starting place for new contributors to Salt.
 
 ``Needs Testcase``
     The issue or pull request relates to a feature that needs test coverage.  The pull request containing the tests
@@ -295,5 +295,5 @@ with labels.
     The issue is related to a Zendesk customer support ticket.
 
 ``<Release>``
-    The issue is scheduled to be implemented by ``<Release>``.  See :doc:`<topics/releases/version_numbers>` for a
+    The issue is scheduled to be implemented by ``<Release>``.  See :ref:`<version-numbers>` for a
     discussion of Salt's release codenames.

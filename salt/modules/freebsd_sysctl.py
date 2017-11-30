@@ -2,14 +2,20 @@
 '''
 Module for viewing and modifying sysctl parameters
 '''
+
+# Import Python libs
 from __future__ import absolute_import
+import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 from salt.exceptions import CommandExecutionError
 
 # Define the module's virtual name
 __virtualname__ = 'sysctl'
+
+# Get logging started
+log = logging.getLogger(__name__)
 
 
 def __virtual__():
@@ -56,17 +62,31 @@ def show(config_file=False):
     )
     cmd = 'sysctl -ae'
     ret = {}
-    out = __salt__['cmd.run'](cmd, output_loglevel='trace')
     comps = ['']
-    for line in out.splitlines():
-        if any([line.startswith('{0}.'.format(root)) for root in roots]):
-            comps = line.split('=', 1)
-            ret[comps[0]] = comps[1]
-        elif comps[0]:
-            ret[comps[0]] += '{0}\n'.format(line)
-        else:
-            continue
-    return ret
+
+    if config_file:
+        try:
+            with salt.utils.files.fopen(config_file, 'r') as f:
+                for line in f.readlines():
+                    l = line.strip()
+                    if l != "" and not l.startswith("#"):
+                        comps = line.split('=', 1)
+                        ret[comps[0]] = comps[1]
+            return ret
+        except (OSError, IOError):
+            log.error('Could not open sysctl config file')
+            return None
+    else:
+        out = __salt__['cmd.run'](cmd, output_loglevel='trace')
+        for line in out.splitlines():
+            if any([line.startswith('{0}.'.format(root)) for root in roots]):
+                comps = line.split('=', 1)
+                ret[comps[0]] = comps[1]
+            elif comps[0]:
+                ret[comps[0]] += '{0}\n'.format(line)
+            else:
+                continue
+        return ret
 
 
 def get(name):
@@ -121,7 +141,7 @@ def persist(name, value, config='/etc/sysctl.conf'):
     edited = False
     value = str(value)
 
-    with salt.utils.fopen(config, 'r') as ifile:
+    with salt.utils.files.fopen(config, 'r') as ifile:
         for line in ifile:
             if not line.startswith('{0}='.format(name)):
                 nlines.append(line)
@@ -142,7 +162,7 @@ def persist(name, value, config='/etc/sysctl.conf'):
                 edited = True
     if not edited:
         nlines.append("{0}\n".format(_formatfor(name, value, config)))
-    with salt.utils.fopen(config, 'w+') as ofile:
+    with salt.utils.files.fopen(config, 'w+') as ofile:
         ofile.writelines(nlines)
     if config != '/boot/loader.conf':
         assign(name, value)

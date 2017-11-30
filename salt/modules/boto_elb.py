@@ -5,7 +5,7 @@ Connection module for Amazon ELB
 .. versionadded:: 2014.7.0
 
 :configuration: This module accepts explicit elb credentials but can also utilize
-    IAM roles assigned to the instance trough Instance Profiles. Dynamic
+    IAM roles assigned to the instance through Instance Profiles. Dynamic
     credentials are then automatically obtained from AWS API and no further
     configuration is necessary. More Information available at:
 
@@ -42,21 +42,27 @@ Connection module for Amazon ELB
 :depends: boto >= 2.33.0
 '''
 # keep lint from choking on _get_conn and _cache_id
-#pylint: disable=E0602
+# pylint: disable=E0602
 
 from __future__ import absolute_import
 
 # Import Python libs
 import logging
-from distutils.version import LooseVersion as _LooseVersion  # pylint: disable=import-error,no-name-in-module
 import json
-import salt.ext.six as six
+import time
 
 log = logging.getLogger(__name__)
 
+# Import Salt libs
+import salt.utils.odict as odict
+from salt.utils.versions import LooseVersion as _LooseVersion
+
 # Import third party libs
+from salt.ext import six
+from salt.ext.six import string_types
 try:
     import boto
+    import boto.ec2  # pylint: enable=unused-import
     # connection settings were added in 2.33.0
     required_boto_version = '2.33.0'
     if (_LooseVersion(boto.__version__) <
@@ -64,7 +70,6 @@ try:
         msg = 'boto_elb requires boto {0}.'.format(required_boto_version)
         logging.debug(msg)
         raise ImportError()
-    import boto.ec2
     from boto.ec2.elb import HealthCheck
     from boto.ec2.elb.attributes import AccessLogAttribute
     from boto.ec2.elb.attributes import ConnectionDrainingAttribute
@@ -75,10 +80,6 @@ try:
 except ImportError:
     HAS_BOTO = False
 
-# Import Salt libs
-from salt.ext.six import string_types
-import salt.utils.odict as odict
-
 
 def __virtual__():
     '''
@@ -86,7 +87,7 @@ def __virtual__():
     '''
     if not HAS_BOTO:
         return (False, "The boto_elb module cannot be loaded: boto library not found")
-    __utils__['boto.assign_funcs'](__name__, 'elb', module='ec2.elb')
+    __utils__['boto.assign_funcs'](__name__, 'elb', module='ec2.elb', pack=__salt__)
     return True
 
 
@@ -111,13 +112,47 @@ def exists(name, region=None, key=None, keyid=None, profile=None):
             log.debug(msg)
             return False
     except boto.exception.BotoServerError as error:
-        log.debug(error)
+        log.warning(error)
         return False
+
+
+def get_all_elbs(region=None, key=None, keyid=None, profile=None):
+    '''
+    Return all load balancers associated with an account
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt myminion boto_elb.get_all_elbs region=us-east-1
+    '''
+    conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+
+    try:
+        return [e for e in conn.get_all_load_balancers()]
+    except boto.exception.BotoServerError as error:
+        log.warning(error)
+        return []
+
+
+def list_elbs(region=None, key=None, keyid=None, profile=None):
+    '''
+    Return names of all load balancers associated with an account
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt myminion boto_elb.list_elbs region=us-east-1
+    '''
+
+    return [e.name for e in get_all_elbs(region=region, key=key, keyid=keyid,
+                                         profile=profile)]
 
 
 def get_elb_config(name, region=None, key=None, keyid=None, profile=None):
     '''
-    Check to see if an ELB exists.
+    Get an ELB configuration.
 
     CLI example:
 
@@ -126,49 +161,58 @@ def get_elb_config(name, region=None, key=None, keyid=None, profile=None):
         salt myminion boto_elb.exists myelb region=us-east-1
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    retries = 30
 
-    try:
-        lb = conn.get_all_load_balancers(load_balancer_names=[name])
-        lb = lb[0]
-        ret = {}
-        ret['availability_zones'] = lb.availability_zones
-        listeners = []
-        for _listener in lb.listeners:
-            listener_dict = {}
-            listener_dict['elb_port'] = _listener.load_balancer_port
-            listener_dict['elb_protocol'] = _listener.protocol
-            listener_dict['instance_port'] = _listener.instance_port
-            listener_dict['instance_protocol'] = _listener.instance_protocol
-            listener_dict['policies'] = _listener.policy_names
-            if _listener.ssl_certificate_id:
-                listener_dict['certificate'] = _listener.ssl_certificate_id
-            listeners.append(listener_dict)
-        ret['listeners'] = listeners
-        backends = []
-        for _backend in lb.backends:
-            bs_dict = {}
-            bs_dict['instance_port'] = _backend.instance_port
-            bs_dict['policies'] = [p.policy_name for p in _backend.policies]
-            backends.append(bs_dict)
-        ret['backends'] = backends
-        ret['subnets'] = lb.subnets
-        ret['security_groups'] = lb.security_groups
-        ret['scheme'] = lb.scheme
-        ret['dns_name'] = lb.dns_name
-        ret['tags'] = _get_all_tags(conn, name)
-        lb_policy_lists = [
-            lb.policies.app_cookie_stickiness_policies,
-            lb.policies.lb_cookie_stickiness_policies,
-            lb.policies.other_policies
-            ]
-        policies = []
-        for policy_list in lb_policy_lists:
-            policies += [p.policy_name for p in policy_list]
-        ret['policies'] = policies
-        return ret
-    except boto.exception.BotoServerError as error:
-        log.debug(error)
-        return []
+    while retries:
+        try:
+            lb = conn.get_all_load_balancers(load_balancer_names=[name])
+            lb = lb[0]
+            ret = {}
+            ret['availability_zones'] = lb.availability_zones
+            listeners = []
+            for _listener in lb.listeners:
+                listener_dict = {}
+                listener_dict['elb_port'] = _listener.load_balancer_port
+                listener_dict['elb_protocol'] = _listener.protocol
+                listener_dict['instance_port'] = _listener.instance_port
+                listener_dict['instance_protocol'] = _listener.instance_protocol
+                listener_dict['policies'] = _listener.policy_names
+                if _listener.ssl_certificate_id:
+                    listener_dict['certificate'] = _listener.ssl_certificate_id
+                listeners.append(listener_dict)
+            ret['listeners'] = listeners
+            backends = []
+            for _backend in lb.backends:
+                bs_dict = {}
+                bs_dict['instance_port'] = _backend.instance_port
+                bs_dict['policies'] = [p.policy_name for p in _backend.policies]
+                backends.append(bs_dict)
+            ret['backends'] = backends
+            ret['subnets'] = lb.subnets
+            ret['security_groups'] = lb.security_groups
+            ret['scheme'] = lb.scheme
+            ret['dns_name'] = lb.dns_name
+            ret['tags'] = _get_all_tags(conn, name)
+            lb_policy_lists = [
+                lb.policies.app_cookie_stickiness_policies,
+                lb.policies.lb_cookie_stickiness_policies,
+                lb.policies.other_policies
+                ]
+            policies = []
+            for policy_list in lb_policy_lists:
+                policies += [p.policy_name for p in policy_list]
+            ret['policies'] = policies
+            return ret
+        except boto.exception.BotoServerError as error:
+            if error.error_code == 'Throttling':
+                log.debug('Throttled by AWS API, will retry in 5 seconds.')
+                time.sleep(5)
+                retries -= 1
+                continue
+            log.error('Error fetching config for ELB {0}: {1}'.format(name, error.message))
+            log.error(error)
+            return {}
+    return {}
 
 
 def listener_dict_to_tuple(listener):
@@ -219,10 +263,11 @@ def create(name, availability_zones, listeners, subnets=None,
     _complex_listeners = []
     for listener in listeners:
         _complex_listeners.append(listener_dict_to_tuple(listener))
+
     try:
-        lb = conn.create_load_balancer(name, availability_zones, [],
-                                       subnets, security_groups, scheme,
-                                       _complex_listeners)
+        lb = conn.create_load_balancer(name=name, zones=availability_zones, subnets=subnets,
+                                       security_groups=security_groups, scheme=scheme,
+                                       complex_listeners=_complex_listeners)
         if lb:
             log.info('Created ELB {0}'.format(name))
             return True
@@ -232,7 +277,7 @@ def create(name, availability_zones, listeners, subnets=None,
             return False
     except boto.exception.BotoServerError as error:
         log.debug(error)
-        msg = 'Failed to create ELB {0}: {1}'.format(name, error)
+        msg = 'Failed to create ELB {0}: {1}: {2}'.format(name, error.error_code, error.message)
         log.error(msg)
         return False
 
@@ -468,37 +513,75 @@ def get_attributes(name, region=None, key=None, keyid=None, profile=None):
         salt myminion boto_elb.get_attributes myelb
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    retries = 30
 
-    try:
-        lbattrs = conn.get_all_lb_attributes(name)
-        ret = odict.OrderedDict()
-        ret['access_log'] = odict.OrderedDict()
-        ret['cross_zone_load_balancing'] = odict.OrderedDict()
-        ret['connection_draining'] = odict.OrderedDict()
-        ret['connecting_settings'] = odict.OrderedDict()
-        al = lbattrs.access_log
-        czlb = lbattrs.cross_zone_load_balancing
-        cd = lbattrs.connection_draining
-        cs = lbattrs.connecting_settings
-        ret['access_log']['enabled'] = al.enabled
-        ret['access_log']['s3_bucket_name'] = al.s3_bucket_name
-        ret['access_log']['s3_bucket_prefix'] = al.s3_bucket_prefix
-        ret['access_log']['emit_interval'] = al.emit_interval
-        ret['cross_zone_load_balancing']['enabled'] = czlb.enabled
-        ret['connection_draining']['enabled'] = cd.enabled
-        ret['connection_draining']['timeout'] = cd.timeout
-        ret['connecting_settings']['idle_timeout'] = cs.idle_timeout
-        return ret
-    except boto.exception.BotoServerError as error:
-        log.debug(error)
-        log.error('ELB {0} does not exist: {1}'.format(name, error))
-        return {}
+    while retries:
+        try:
+            lbattrs = conn.get_all_lb_attributes(name)
+            ret = odict.OrderedDict()
+            ret['access_log'] = odict.OrderedDict()
+            ret['cross_zone_load_balancing'] = odict.OrderedDict()
+            ret['connection_draining'] = odict.OrderedDict()
+            ret['connecting_settings'] = odict.OrderedDict()
+            al = lbattrs.access_log
+            czlb = lbattrs.cross_zone_load_balancing
+            cd = lbattrs.connection_draining
+            cs = lbattrs.connecting_settings
+            ret['access_log']['enabled'] = al.enabled
+            ret['access_log']['s3_bucket_name'] = al.s3_bucket_name
+            ret['access_log']['s3_bucket_prefix'] = al.s3_bucket_prefix
+            ret['access_log']['emit_interval'] = al.emit_interval
+            ret['cross_zone_load_balancing']['enabled'] = czlb.enabled
+            ret['connection_draining']['enabled'] = cd.enabled
+            ret['connection_draining']['timeout'] = cd.timeout
+            ret['connecting_settings']['idle_timeout'] = cs.idle_timeout
+            return ret
+        except boto.exception.BotoServerError as e:
+            if e.error_code == 'Throttling':
+                log.debug("Throttled by AWS API, will retry in 5 seconds...")
+                time.sleep(5)
+                retries -= 1
+                continue
+            log.error('ELB {0} does not exist: {1}'.format(name, e.message))
+            return {}
+    return {}
 
 
 def set_attributes(name, attributes, region=None, key=None, keyid=None,
                    profile=None):
     '''
     Set attributes on an ELB.
+
+    name (string)
+        Name of the ELB instance to set attributes for
+
+    attributes
+        A dict of attributes to set.
+
+        Valid attributes are:
+
+        access_log (dict)
+            enabled (bool)
+                Enable storage of access logs.
+            s3_bucket_name (string)
+                The name of the S3 bucket to place logs.
+            s3_bucket_prefix (string)
+                Prefix for the log file name.
+            emit_interval (int)
+                Interval for storing logs in S3 in minutes. Valid values are
+                5 and 60.
+
+        connection_draining (dict)
+            enabled (bool)
+                Enable connection draining.
+            timeout (int)
+                Maximum allowed time in seconds for sending existing
+                connections to an instance that is deregistering or unhealthy.
+                Default is 300.
+
+        cross_zone_load_balancing (dict)
+            enabled (bool)
+                Enable cross-zone load balancing.
 
     CLI example to set attributes on an ELB:
 
@@ -578,22 +661,29 @@ def get_health_check(name, region=None, key=None, keyid=None, profile=None):
         salt myminion boto_elb.get_health_check myelb
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    retries = 30
 
-    try:
-        lb = conn.get_all_load_balancers(load_balancer_names=[name])
-        lb = lb[0]
-        ret = odict.OrderedDict()
-        hc = lb.health_check
-        ret['interval'] = hc.interval
-        ret['target'] = hc.target
-        ret['healthy_threshold'] = hc.healthy_threshold
-        ret['timeout'] = hc.timeout
-        ret['unhealthy_threshold'] = hc.unhealthy_threshold
-        return ret
-    except boto.exception.BotoServerError as error:
-        log.debug(error)
-        log.error('ELB {0} does not exist: {1}'.format(name, error))
-        return {}
+    while True:
+        try:
+            lb = conn.get_all_load_balancers(load_balancer_names=[name])
+            lb = lb[0]
+            ret = odict.OrderedDict()
+            hc = lb.health_check
+            ret['interval'] = hc.interval
+            ret['target'] = hc.target
+            ret['healthy_threshold'] = hc.healthy_threshold
+            ret['timeout'] = hc.timeout
+            ret['unhealthy_threshold'] = hc.unhealthy_threshold
+            return ret
+        except boto.exception.BotoServerError as e:
+            if retries and e.code == 'Throttling':
+                log.debug('Throttled by AWS API, will retry in 5 seconds.')
+                time.sleep(5)
+                retries -= 1
+                continue
+            log.error(error)
+            log.error('ELB {0} not found.'.format(name))
+            return {}
 
 
 def set_health_check(name, health_check, region=None, key=None, keyid=None,
@@ -608,16 +698,23 @@ def set_health_check(name, health_check, region=None, key=None, keyid=None,
         salt myminion boto_elb.set_health_check myelb '{"target": "HTTP:80/"}'
     '''
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
+    retries = 30
 
     hc = HealthCheck(**health_check)
-    try:
-        conn.configure_health_check(name, hc)
-        log.info('Configured health check on ELB {0}'.format(name))
-    except boto.exception.BotoServerError as error:
-        log.debug(error)
-        log.info('Failed to configure health check on ELB {0}: {1}'.format(name, error))
-        return False
-    return True
+    while True:
+        try:
+            conn.configure_health_check(name, hc)
+            log.info('Configured health check on ELB {0}'.format(name))
+            return True
+        except boto.exception.BotoServerError as error:
+            if retries and e.code == 'Throttling':
+                log.debug('Throttled by AWS API, will retry in 5 seconds.')
+                time.sleep(5)
+                retries -= 1
+                continue
+            log.error(error)
+            log.error('Failed to configure health check on ELB {0}'.format(name))
+            return False
 
 
 def register_instances(name, instances, region=None, key=None, keyid=None,
@@ -640,14 +737,14 @@ def register_instances(name, instances, region=None, key=None, keyid=None,
     '''
     # convert instances to list type, enabling consistent use of instances
     # variable throughout the register_instances method
-    if isinstance(instances, str) or isinstance(instances, six.text_type):
+    if isinstance(instances, six.string_types) or isinstance(instances, six.text_type):
         instances = [instances]
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
 
     try:
         registered_instances = conn.register_instances(name, instances)
     except boto.exception.BotoServerError as error:
-        log.warn(error)
+        log.warning(error)
         return False
     registered_instance_ids = [instance.id for instance in
                                registered_instances]
@@ -655,7 +752,7 @@ def register_instances(name, instances, region=None, key=None, keyid=None,
     # able to be registered with the given ELB
     register_failures = set(instances).difference(set(registered_instance_ids))
     if register_failures:
-        log.warn('Instance(s): {0} not registered with ELB {1}.'
+        log.warning('Instance(s): {0} not registered with ELB {1}.'
                  .format(list(register_failures), name))
         register_result = False
     else:
@@ -684,7 +781,7 @@ def deregister_instances(name, instances, region=None, key=None, keyid=None,
     '''
     # convert instances to list type, enabling consistent use of instances
     # variable throughout the deregister_instances method
-    if isinstance(instances, str) or isinstance(instances, six.text_type):
+    if isinstance(instances, six.string_types) or isinstance(instances, six.text_type):
         instances = [instances]
     conn = _get_conn(region=region, key=key, keyid=keyid, profile=profile)
 
@@ -696,12 +793,12 @@ def deregister_instances(name, instances, region=None, key=None, keyid=None,
         # deregister_instances returns "None" because the instances are
         # effectively deregistered from ELB
         if error.error_code == 'InvalidInstance':
-            log.warn('One or more of instance(s) {0} are not part of ELB {1}.'
+            log.warning('One or more of instance(s) {0} are not part of ELB {1}.'
                      ' deregister_instances not performed.'
                      .format(instances, name))
             return None
         else:
-            log.warn(error)
+            log.warning(error)
             return False
     registered_instance_ids = [instance.id for instance in
                                registered_instances]
@@ -709,12 +806,39 @@ def deregister_instances(name, instances, region=None, key=None, keyid=None,
     # unable to be deregistered from the given ELB
     deregister_failures = set(instances).intersection(set(registered_instance_ids))
     if deregister_failures:
-        log.warn('Instance(s): {0} not deregistered from ELB {1}.'
+        log.warning('Instance(s): {0} not deregistered from ELB {1}.'
                  .format(list(deregister_failures), name))
         deregister_result = False
     else:
         deregister_result = True
     return deregister_result
+
+
+def set_instances(name, instances, test=False, region=None, key=None, keyid=None,
+                         profile=None):
+    '''
+    Set the instances assigned to an ELB to exactly the list given
+
+    CLI example:
+
+    .. code-block:: bash
+
+        salt myminion boto_elb.set_instances myelb region=us-east-1 instances="[instance_id,instance_id]"
+    '''
+    ret = True
+    current = set([i['instance_id'] for i in get_instance_health(name, region, key, keyid, profile)])
+    desired = set(instances)
+    add = desired - current
+    remove = current - desired
+    if test:
+        return bool(add or remove)
+    if len(remove):
+        if deregister_instances(name, list(remove), region, key, keyid, profile) is False:
+            ret = False
+    if len(add):
+        if register_instances(name, list(add), region, key, keyid, profile) is False:
+            ret = False
+    return ret
 
 
 def get_instance_health(name, region=None, key=None, keyid=None, profile=None, instances=None):
@@ -750,7 +874,7 @@ def create_policy(name, policy_name, policy_type, policy, region=None,
     '''
     Create an ELB policy.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI example:
 
@@ -783,7 +907,7 @@ def delete_policy(name, policy_name, region=None, key=None, keyid=None,
     '''
     Delete an ELB policy.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI example:
 
@@ -811,7 +935,7 @@ def set_listener_policy(name, port, policies=None, region=None, key=None,
     '''
     Set the policies of an ELB listener.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI example:
 
@@ -864,7 +988,7 @@ def set_tags(name, tags, region=None, key=None, keyid=None, profile=None):
     '''
     Add the tags on an ELB
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     name
         name of the ELB

@@ -10,7 +10,7 @@ from __future__ import absolute_import
 
 import logging
 
-import salt.utils
+import salt.utils.path
 from salt.exceptions import CommandExecutionError
 
 logger = logging.getLogger(__name__)
@@ -25,13 +25,28 @@ def __virtual__():
     '''
     Only work when cabal-install is installed.
     '''
-    return (salt.utils.which('cabal') is not None) and \
-        (salt.utils.which('ghc-pkg') is not None)
+    return (salt.utils.path.which('cabal') is not None) and \
+        (salt.utils.path.which('ghc-pkg') is not None)
 
 
 def update(user=None, env=None):
     '''
     Updates list of known packages.
+
+    user
+        The user to run cabal update with
+
+    env
+        Environment variables to set when invoking cabal. Uses the
+        same ``env`` format as the :py:func:`cmd.run
+        <salt.modules.cmdmod.run>` execution function.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' cabal.update
+
     '''
     return __salt__['cmd.run_all']('cabal update', runas=user, env=env)
 
@@ -148,6 +163,13 @@ def uninstall(pkg,
         Environment variables to set when invoking cabal. Uses the
         same ``env`` format as the :py:func:`cmd.run
         <salt.modules.cmdmod.run>` execution function
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' cabal.uninstall ShellCheck
+
     '''
     cmd = ['ghc-pkg unregister']
     cmd.append('"{0}"'.format(pkg))

@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 '''
 Support for Linux File Access Control Lists
+
+The Linux ACL module requires the `getfacl` and `setfacl` binaries.
+
 '''
 from __future__ import absolute_import
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 from salt.exceptions import CommandExecutionError
 
 # Define the module's virtual name
@@ -16,7 +19,7 @@ def __virtual__():
     '''
     Only load the module if getfacl is installed
     '''
-    if salt.utils.which('getfacl'):
+    if salt.utils.path.which('getfacl'):
         return __virtualname__
     return (False, 'The linux_acl execution module cannot be loaded: the getfacl binary is not in the path.')
 
@@ -63,7 +66,7 @@ def getfacl(*args, **kwargs):
     if recursive:
         cmd += ' -R'
     for dentry in args:
-        cmd += ' {0}'.format(dentry)
+        cmd += ' "{0}"'.format(dentry)
     out = __salt__['cmd.run'](cmd, python_shell=False).splitlines()
     dentry = ''
     for line in out:
@@ -180,7 +183,7 @@ def wipefacls(*args, **kwargs):
     if recursive:
         cmd += ' -R'
     for dentry in args:
-        cmd += ' {0}'.format(dentry)
+        cmd += ' "{0}"'.format(dentry)
     __salt__['cmd.run'](cmd, python_shell=False)
     return True
 
@@ -213,8 +216,10 @@ def modfacl(acl_type, acl_name='', perms='', *args, **kwargs):
         salt '*' acl.modfacl d:u myuser 7 /tmp/house/kitchen
         salt '*' acl.modfacl g mygroup 0 /tmp/house/kitchen /tmp/house/livingroom
         salt '*' acl.modfacl user myuser rwx /tmp/house/kitchen recursive=True
+        salt '*' acl.modfacl user myuser rwx /tmp/house/kitchen raise_err=True
     '''
     recursive = kwargs.pop('recursive', False)
+    raise_err = kwargs.pop('raise_err', False)
 
     _raise_on_no_files(*args)
 
@@ -227,8 +232,8 @@ def modfacl(acl_type, acl_name='', perms='', *args, **kwargs):
     cmd = '{0} {1}:{2}:{3}'.format(cmd, _acl_prefix(acl_type), acl_name, perms)
 
     for dentry in args:
-        cmd += ' {0}'.format(dentry)
-    __salt__['cmd.run'](cmd, python_shell=False)
+        cmd += ' "{0}"'.format(dentry)
+    __salt__['cmd.run'](cmd, python_shell=False, raise_err=raise_err)
     return True
 
 
@@ -250,13 +255,15 @@ def delfacl(acl_type, acl_name='', *args, **kwargs):
 
     _raise_on_no_files(*args)
 
-    cmd = 'setfacl -x'
+    cmd = 'setfacl'
     if recursive:
         cmd += ' -R'
+
+    cmd += ' -x'
 
     cmd = '{0} {1}:{2}'.format(cmd, _acl_prefix(acl_type), acl_name)
 
     for dentry in args:
-        cmd += ' {0}'.format(dentry)
+        cmd += ' "{0}"'.format(dentry)
     __salt__['cmd.run'](cmd, python_shell=False)
     return True

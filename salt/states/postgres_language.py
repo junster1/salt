@@ -6,7 +6,7 @@ Management of PostgreSQL languages
 The postgres_language module is used to create and manage Postgres languages.
 Languages can be set as either absent or present
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: yaml
 
@@ -28,7 +28,9 @@ def __virtual__():
     '''
     Only load if the postgres module is present
     '''
-    return 'postgres.language_create' in __salt__
+    if 'postgres.language_create' not in __salt__:
+        return (False, 'Unable to load postgres module.  Make sure `postgres.bins_dir` is set.')
+    return True
 
 
 def present(name,

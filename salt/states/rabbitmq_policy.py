@@ -21,7 +21,7 @@ from __future__ import absolute_import
 
 # Import python libs
 import logging
-import salt.utils
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +30,13 @@ def __virtual__():
     '''
     Only load if RabbitMQ is installed.
     '''
-    return salt.utils.which('rabbitmqctl') is not None
+    return salt.utils.path.which('rabbitmqctl') is not None
 
 
 def present(name,
             pattern,
             definition,
+            apply_to=None,
             priority=0,
             vhost='/',
             runas=None):
@@ -52,6 +53,8 @@ def present(name,
         A json dict describing the policy
     priority
         Priority (defaults to 0)
+    apply_to
+        Apply policy to 'queues', 'exchanges' or 'all' (defailt to 'all')
     vhost
         Virtual host to apply to (defaults to '/')
     runas
@@ -68,6 +71,8 @@ def present(name,
             updates.append('Pattern')
         if policy.get('definition') != definition:
             updates.append('Definition')
+        if apply_to and (policy.get('apply-to') != apply_to):
+            updates.append('Applyto')
         if int(policy.get('priority')) != priority:
             updates.append('Priority')
 
@@ -75,33 +80,42 @@ def present(name,
         ret['comment'] = 'Policy {0} {1} is already present'.format(vhost, name)
         return ret
 
-    if __opts__['test']:
-        ret['result'] = None
-        if not policy:
+    if not policy:
+        ret['changes'].update({'old': {}, 'new': name})
+        if __opts__['test']:
             ret['comment'] = 'Policy {0} {1} is set to be created'.format(vhost, name)
-        elif updates:
+        else:
+            log.debug('Policy doesn\'t exist - Creating')
+            result = __salt__['rabbitmq.set_policy'](vhost,
+                                                     name,
+                                                     pattern,
+                                                     definition,
+                                                     apply_to,
+                                                     priority=priority,
+                                                     runas=runas)
+    elif updates:
+        ret['changes'].update({'old': policy, 'new': updates})
+        if __opts__['test']:
             ret['comment'] = 'Policy {0} {1} is set to be updated'.format(vhost, name)
-    else:
-        changes = {'new': '', 'old': ''}
-        if not policy:
-            changes['new'] = policy
-            log.debug(
-                "Policy doesn't exist - Creating")
-            result = __salt__['rabbitmq.set_policy'](
-                vhost, name, pattern, definition, priority=priority, runas=runas)
-        elif updates:
-            changes['old'] = policy
-            changes['new'] = updates
+        else:
             log.debug('Policy exists but needs updating')
-            result = __salt__['rabbitmq.set_policy'](
-                vhost, name, pattern, definition, priority=priority, runas=runas)
+            result = __salt__['rabbitmq.set_policy'](vhost,
+                                                     name,
+                                                     pattern,
+                                                     definition,
+                                                     apply_to,
+                                                     priority=priority,
+                                                     runas=runas)
 
-        if 'Error' in result:
-            ret['result'] = False
-            ret['comment'] = result['Error']
-        elif 'Set' in result:
-            ret['comment'] = result['Set']
-            ret['changes'] = changes
+    if 'Error' in result:
+        ret['result'] = False
+        ret['comment'] = result['Error']
+    elif ret['changes'] == {}:
+        ret['comment'] = '\'{0}\' is already in the desired state.'.format(name)
+    elif __opts__['test']:
+        ret['result'] = None
+    elif 'Set' in result:
+        ret['comment'] = result['Set']
 
     return ret
 
@@ -125,19 +139,23 @@ def absent(name,
         vhost, name, runas=runas)
 
     if not policy_exists:
-        ret['comment'] = 'Policy {0} {1} is not present'.format(vhost, name)
+        ret['comment'] = 'Policy \'{0} {1}\' is not present.'.format(vhost, name)
         return ret
 
-    if __opts__['test']:
-        ret['result'] = None
-        ret['comment'] = 'Removing policy {0} {1}'.format(vhost, name)
-    else:
+    if not __opts__['test']:
         result = __salt__['rabbitmq.delete_policy'](vhost, name, runas=runas)
         if 'Error' in result:
             ret['result'] = False
             ret['comment'] = result['Error']
+            return ret
         elif 'Deleted' in result:
             ret['comment'] = 'Deleted'
-            ret['changes'] = {'new': '', 'old': name}
+
+    # If we've reached this far before returning, we have changes.
+    ret['changes'] = {'new': '', 'old': name}
+
+    if __opts__['test']:
+        ret['result'] = None
+        ret['comment'] = 'Policy \'{0} {1}\' will be removed.'.format(vhost, name)
 
     return ret

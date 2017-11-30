@@ -1,3 +1,5 @@
+.. _coding-style:
+
 =================
 Salt Coding Style
 =================
@@ -15,18 +17,29 @@ no grounds to treat others without respect, especially people working to
 improve Salt)!!
 
 
+.. _pylint-instructions:
+
 Linting
 =======
 
-Most Salt style conventions are codified in Salt's ``.pylintrc`` file. This file
-is found in the root of the Salt project and can be passed as an argument to the
-pylint_ program as follows:
+Most Salt style conventions are codified in Salt's ``.pylintrc`` file. Salt's
+pylint file has two dependencies: pylint_ and saltpylint_. You can install
+these dependencies with ``pip``:
+
+.. code-block:: bash
+
+    pip install pylint
+    pip install saltpylint
+
+The ``.pylintrc`` file is found in the root of the Salt project and can be passed
+as an argument to the pylint_ program as follows:
 
 .. code-block:: bash
 
     pylint --rcfile=/path/to/salt/.pylintrc salt/dir/to/lint
 
 .. _pylint: http://www.pylint.org
+.. _saltpylint: https://github.com/saltstack/salt-pylint
 
 Variables
 =========
@@ -122,7 +135,7 @@ When adding a new function or state, where possible try to use a
 
 If you are uncertain what version should be used, either consult a core
 developer in IRC or bring this up when opening your
-:doc:`pull request </topics/development/hacking>` and a core developer will add the proper
+:ref:`pull request <installing-for-development>` and a core developer will add the proper
 version once your pull request has been merged. Bugfixes will be available in a
 bugfix release (i.e. 0.17.1, the first bugfix release for 0.17.0), while new
 features are held for feature releases, and this will affect what version
@@ -217,6 +230,20 @@ other salt modules which needed to import :mod:`sys<python2:sys>` would have to
 also import :mod:`absolute_import<python2:__future__>`, which should be
 avoided.
 
+.. note::
+
+    An exception to this rule is the ``absolute_import`` from ``__future__`` at
+    the top of each file within the Salt project. This import is necessary for
+    Py3 compatibility. This particular import looks like this:
+
+    .. code-block:: python
+
+        from __future__ import absolute_import
+
+    This import is required for all new Salt files and is a good idea to add to
+    any custom states or modules. However, the practice of avoiding absolute
+    imports still applies to all other cases as to avoid a name conflict.
+
 .. _`absolute imports`: http://legacy.python.org/dev/peps/pep-0328/#rationale-for-absolute-imports
 
 
@@ -255,7 +282,7 @@ instance:
             context=None,
             replace=True,
             defaults=None,
-            env=None,
+            saltenv=None,
             backup='',
             **kwargs):
 

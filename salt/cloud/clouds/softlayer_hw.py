@@ -217,15 +217,11 @@ def create(vm_):
         # Check for required profile parameters before sending any API calls.
         if vm_['profile'] and config.is_profile_configured(__opts__,
                                                            __active_provider_name__ or 'softlayer_hw',
-                                                           vm_['profile']) is False:
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
-
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in vm_:
-        vm_['driver'] = vm_.pop('provider')
 
     name = vm_['name']
     hostname = name
@@ -241,15 +237,12 @@ def create(vm_):
         name = '.'.join([name, domain])
         vm_['name'] = name
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(name),
-        {
-            'name': name,
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('creating', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -328,11 +321,14 @@ def create(vm_):
     if location:
         kwargs['location'] = location
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(name),
-        {'kwargs': kwargs},
+        args={
+            'kwargs': __utils__['cloud.filter_event']('requesting', kwargs, list(kwargs)),
+        },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -415,19 +411,16 @@ def create(vm_):
 
     vm_['ssh_host'] = ip_address
     vm_['password'] = passwd
-    ret = salt.utils.cloud.bootstrap(vm_, __opts__)
+    ret = __utils__['cloud.bootstrap'](vm_, __opts__)
 
     ret.update(response)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(name),
-        {
-            'name': name,
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('created', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -451,7 +444,7 @@ def list_nodes_full(mask='mask[id, hostname, primaryIpAddress, \
 
     for node in response:
         ret[node['hostname']] = node
-    salt.utils.cloud.cache_node_list(ret, __active_provider_name__.split(':')[0], __opts__)
+    __utils__['cloud.cache_node_list'](ret, __active_provider_name__.split(':')[0], __opts__)
     return ret
 
 
@@ -504,7 +497,7 @@ def show_instance(name, call=None):
         )
 
     nodes = list_nodes_full()
-    salt.utils.cloud.cache_node(nodes[name], __active_provider_name__, __opts__)
+    __utils__['cloud.cache_node'](nodes[name], __active_provider_name__, __opts__)
     return nodes[name]
 
 
@@ -524,16 +517,14 @@ def destroy(name, call=None):
             '-a or --action.'
         )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
-
-    # If the VM was created with use_fqdn, the short hostname will be used instead.
-    name = name.split('.')[0]
 
     node = show_instance(name, call='action')
     conn = get_conn(service='SoftLayer_Ticket')
@@ -547,15 +538,16 @@ def destroy(name, call=None):
         }
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     return response
 
@@ -657,7 +649,7 @@ def show_all_categories(call=None):
     '''
     Return a dict of all available categories on the cloud provider.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
     '''
     if call == 'action':
         raise SaltCloudSystemExit(

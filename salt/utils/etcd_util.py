@@ -15,11 +15,21 @@ may be passed in. The following configurations are both valid:
     # No profile name
     etcd.host: 127.0.0.1
     etcd.port: 4001
+    etcd.username: larry  # Optional; requires etcd.password to be set
+    etcd.password: 123pass  # Optional; requires etcd.username to be set
+    etcd.ca: /path/to/your/ca_cert/ca.pem # Optional
+    etcd.client_key: /path/to/your/client_key/client-key.pem # Optional; requires etcd.ca and etcd.client_cert to be set
+    etcd.client_cert: /path/to/your/client_cert/client.pem # Optional; requires etcd.ca and etcd.client_key to be set
 
     # One or more profiles defined
     my_etcd_config:
       etcd.host: 127.0.0.1
       etcd.port: 4001
+      etcd.username: larry  # Optional; requires etcd.password to be set
+      etcd.password: 123pass  # Optional; requires etcd.username to be set
+      etcd.ca: /path/to/your/ca_cert/ca.pem # Optional
+      etcd.client_key: /path/to/your/client_key/client-key.pem # Optional; requires etcd.ca and etcd.client_cert to be set
+      etcd.client_cert: /path/to/your/client_cert/client.pem # Optional; requires etcd.ca and etcd.client_key to be set
 
 Once configured, the client() function is passed a set of opts, and optionally,
 the name of a profile to be used.
@@ -46,6 +56,7 @@ from __future__ import absolute_import
 import logging
 
 # Import salt libs
+from salt.ext import six
 from salt.exceptions import CommandExecutionError
 
 # Import third party libs
@@ -68,7 +79,8 @@ class EtcdUtilWatchTimeout(Exception):
 
 
 class EtcdClient(object):
-    def __init__(self, opts, profile=None):
+    def __init__(self, opts, profile=None,
+                 host=None, port=None, username=None, password=None, ca=None, client_key=None, client_cert=None, **kwargs):
         opts_pillar = opts.get('pillar', {})
         opts_master = opts_pillar.get('master', {})
 
@@ -82,11 +94,41 @@ class EtcdClient(object):
         else:
             self.conf = opts_merged
 
-        host = self.conf.get('etcd.host', '127.0.0.1')
-        port = self.conf.get('etcd.port', 4001)
+        host = host or self.conf.get('etcd.host', '127.0.0.1')
+        port = port or self.conf.get('etcd.port', 4001)
+        username = username or self.conf.get('etcd.username')
+        password = password or self.conf.get('etcd.password')
+        ca_cert = ca or self.conf.get('etcd.ca')
+        cli_key = client_key or self.conf.get('etcd.client_key')
+        cli_cert = client_cert or self.conf.get('etcd.client_cert')
+
+        auth = {}
+        if username and password:
+            auth = {
+                'username': str(username),
+                'password': str(password)
+            }
+
+        certs = {}
+        if ca_cert and not (cli_cert or cli_key):
+            certs = {
+                'ca_cert': str(ca_cert),
+                'protocol': 'https'
+            }
+
+        if ca_cert and cli_cert and cli_key:
+            cert = (cli_cert, cli_key)
+            certs = {
+                'ca_cert': str(ca_cert),
+                'cert': cert,
+                'protocol': 'https'
+            }
+
+        xargs = auth.copy()
+        xargs.update(certs)
 
         if HAS_LIBS:
-            self.client = etcd.Client(host, port)
+            self.client = etcd.Client(host, port, **xargs)
         else:
             raise CommandExecutionError(
                 '(unable to import etcd, '
@@ -121,6 +163,9 @@ class EtcdClient(object):
             log.error("etcd: failed to perform 'watch' operation on key {0} due to connection error".format(key))
             return {}
         except ValueError:
+            return {}
+
+        if result is None:
             return {}
 
         if recurse:
@@ -186,6 +231,37 @@ class EtcdClient(object):
             log.error('etcd: uncaught exception {0}'.format(err))
             raise
         return result
+
+    def _flatten(self, data, path=''):
+        if len(data.keys()) == 0:
+            return {path: {}}
+        path = path.strip('/')
+        flat = {}
+        for k, v in six.iteritems(data):
+            k = k.strip('/')
+            if path:
+                p = '/{0}/{1}'.format(path, k)
+            else:
+                p = '/{0}'.format(k)
+            if isinstance(v, dict):
+                ret = self._flatten(v, p)
+                flat.update(ret)
+            else:
+                flat[p] = v
+        return flat
+
+    def update(self, fields, path=''):
+        if not isinstance(fields, dict):
+            log.error('etcd.update: fields is not type dict')
+            return None
+        fields = self._flatten(fields, path)
+        keys = {}
+        for k, v in six.iteritems(fields):
+            is_dir = False
+            if isinstance(v, dict):
+                is_dir = True
+            keys[k] = self.write(k, v, directory=is_dir)
+        return keys
 
     def set(self, key, value, ttl=None, directory=False):
         return self.write(key, value, ttl=ttl, directory=directory)
@@ -276,8 +352,8 @@ class EtcdClient(object):
         return ret
 
 
-def get_conn(opts, profile=None):
-    client = EtcdClient(opts, profile)
+def get_conn(opts, profile=None, **kwargs):
+    client = EtcdClient(opts, profile, **kwargs)
     return client
 
 

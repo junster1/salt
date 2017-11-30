@@ -1,3 +1,5 @@
+.. _reporting-bugs:
+
 ==============
 Reporting Bugs
 ==============
@@ -19,7 +21,7 @@ In an issue report, please include the following information:
 
  * Any steps taken to attempt to remediate the problem.
 
- * Any configuration options set in a configuration file that may be relevent.
+ * Any configuration options set in a configuration file that may be relevant.
 
  * A reproduceable test case. This may be as simple as an SLS file that
    illustrates a problem or it may be a link to a repository that contains a
@@ -31,7 +33,7 @@ In an issue report, please include the following information:
    with the ``-ldebug`` flag set.
 
  .. note::
- 
+
     Please be certain to scrub any logs or SLS files for sensitive data!
 
 

@@ -8,7 +8,7 @@
 # run tests. It *will* install the build deps on the machine running the script.
 #
 
-# pylint: disable=file-perms
+# pylint: disable=file-perms,resource-leakage
 
 from __future__ import absolute_import, print_function
 import errno
@@ -234,6 +234,8 @@ def build_centos(opts):
     if major_release == 5:
         python_bin = 'python26'
         define_opts.extend(['--define', 'dist .el5'])
+        if os.path.exists('/etc/yum.repos.d/saltstack.repo'):
+            build_reqs.extend(['--enablerepo=saltstack'])
         build_reqs.extend(['python26-devel'])
     elif major_release == 6:
         build_reqs.extend(['python-devel'])
@@ -287,7 +289,7 @@ def build_centos(opts):
     for src in ('salt-master', 'salt-syndic', 'salt-minion', 'salt-api',
                 'salt-master.service', 'salt-syndic.service',
                 'salt-minion.service', 'salt-api.service',
-                'README.fedora', 'logrotate.salt'):
+                'README.fedora', 'logrotate.salt', 'salt.bash'):
         shutil.copy(os.path.join(rpm_sources_path, src), build_sources_path)
 
     # Prepare SPEC file

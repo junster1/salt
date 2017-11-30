@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 Package support for pkgin based systems, inspired from freebsdpkg module
+
+.. important::
+    If you feel that Salt should be using this module to manage packages on a
+    minion, and it is using a different module (or gives an error similar to
+    *'pkg.install' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 
 # Import python libs
@@ -11,12 +17,15 @@ import os
 import re
 
 # Import salt libs
-import salt.utils
+import salt.utils.data
+import salt.utils.functools
+import salt.utils.path
+import salt.utils.pkg
 import salt.utils.decorators as decorators
 from salt.exceptions import CommandExecutionError, MinionError
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 VERSION_MATCH = re.compile(r'pkgin(?:[\s]+)([\d.]+)(?:[\s]+)(?:.*)')
 log = logging.getLogger(__name__)
@@ -30,7 +39,7 @@ def _check_pkgin():
     '''
     Looks to see if pkgin is present on the system, return full path
     '''
-    ppath = salt.utils.which('pkgin')
+    ppath = salt.utils.path.which('pkgin')
     if ppath is None:
         # pkgin was not found in $PATH, try to find it via LOCALBASE
         try:
@@ -72,8 +81,15 @@ def _supports_regex():
     '''
     Check support of regexp
     '''
-
     return tuple([int(i) for i in _get_version()]) > (0, 5)
+
+
+@decorators.memoize
+def _supports_parsing():
+    '''
+    Check support of parsing
+    '''
+    return tuple([int(i) for i in _get_version()]) > (0, 6)
 
 
 def __virtual__():
@@ -89,6 +105,9 @@ def __virtual__():
 
 
 def _splitpkg(name):
+    '''
+    Split package name from versioned string
+    '''
     # name is in the format foobar-1.0nb1, already space-splitted
     if name[0].isalnum() and name != 'No':  # avoid < > = and 'No result'
         return name.split(';', 1)[0].rsplit('-', 1)
@@ -128,7 +147,7 @@ def search(pkg_name):
 
 def latest_version(*names, **kwargs):
     '''
-    .. versionchanged: Boron
+    .. versionchanged: 2016.3.0
     Return the latest version of the named package available for upgrade or
     installation.
 
@@ -143,7 +162,7 @@ def latest_version(*names, **kwargs):
         salt '*' pkg.latest_version <package1> <package2> ...
     '''
 
-    refresh = salt.utils.is_true(kwargs.pop('refresh', True))
+    refresh = salt.utils.data.is_true(kwargs.pop('refresh', True))
 
     pkglist = {}
     pkgin = _check_pkgin()
@@ -158,11 +177,15 @@ def latest_version(*names, **kwargs):
         if _supports_regex():
             name = '^{0}$'.format(name)
         out = __salt__['cmd.run'](
-            '{0} se {1}'.format(pkgin, name),
+            '{0}{1} se {2}'.format(
+                pkgin,
+                ' -p' if _supports_parsing() else '',
+                name,
+            ),
             output_loglevel='trace'
         )
         for line in out.splitlines():
-            if _supports_regex():  # split on ;
+            if _supports_parsing():  # split on ;
                 p = line.split(';')
             else:
                 p = line.split()  # pkgname-version status
@@ -179,14 +202,15 @@ def latest_version(*names, **kwargs):
                         else:
                             pkglist[s[0]] = ''
 
-    if len(names) == 1 and pkglist:
-        return pkglist[names[0]]
-
-    return pkglist
+    if pkglist and len(names) == 1:
+        if names[0] in pkglist:
+            return pkglist[names[0]]
+    else:
+        return pkglist
 
 
 # available_version is being deprecated
-available_version = salt.utils.alias_function(latest_version, 'available_version')
+available_version = salt.utils.functools.alias_function(latest_version, 'available_version')
 
 
 def version(*names, **kwargs):
@@ -205,9 +229,15 @@ def version(*names, **kwargs):
     return __salt__['pkg_resource.version'](*names, **kwargs)
 
 
-def refresh_db():
+def refresh_db(force=False):
     '''
     Use pkg update to get latest pkg_summary
+
+    force
+        Pass -f so that the cache is always refreshed.
+
+        .. versionadded:: Oxygen
+
 
     CLI Example:
 
@@ -215,11 +245,17 @@ def refresh_db():
 
         salt '*' pkg.refresh_db
     '''
-
+    # Remove rtag file to keep multiple refreshes from happening in pkg states
+    salt.utils.pkg.clear_rtag(__opts__)
     pkgin = _check_pkgin()
 
     if pkgin:
-        call = __salt__['cmd.run_all']('{0} up'.format(pkgin), output_loglevel='trace')
+        call = __salt__['cmd.run_all'](
+            '{0}{1} up'.format(
+                pkgin,
+                ' -f' if force else '',
+            ),
+        output_loglevel='trace')
 
         if call['retcode'] != 0:
             comment = ''
@@ -235,7 +271,7 @@ def refresh_db():
 
 def list_pkgs(versions_as_list=False, **kwargs):
     '''
-    .. versionchanged: Boron
+    .. versionchanged: 2016.3.0
     List the packages currently installed as a dict::
 
         {'<package_name>': '<version>'}
@@ -246,9 +282,9 @@ def list_pkgs(versions_as_list=False, **kwargs):
 
         salt '*' pkg.list_pkgs
     '''
-    versions_as_list = salt.utils.is_true(versions_as_list)
+    versions_as_list = salt.utils.data.is_true(versions_as_list)
     # not yet implemented or not applicable
-    if any([salt.utils.is_true(kwargs.get(x))
+    if any([salt.utils.data.is_true(kwargs.get(x))
             for x in ('removed', 'purge_desired')]):
         return {}
 
@@ -283,6 +319,30 @@ def list_pkgs(versions_as_list=False, **kwargs):
     if not versions_as_list:
         __salt__['pkg_resource.stringify'](ret)
     return ret
+
+
+def list_upgrades(refresh=True, **kwargs):
+    '''
+    List all available package upgrades.
+
+    .. versionadded:: Oxygen
+
+    refresh
+        Whether or not to refresh the package database before installing.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' pkg.list_upgrades
+    '''
+    pkgs = {}
+    for pkg in sorted(list_pkgs(refresh=refresh).keys()):
+        # NOTE: we already optionally refreshed in de list_pkg call
+        pkg_upgrade = latest_version(pkg, refresh=False)
+        if pkg_upgrade:
+            pkgs[pkg] = pkg_upgrade
+    return pkgs
 
 
 def install(name=None, refresh=False, fromrepo=None,
@@ -388,7 +448,7 @@ def install(name=None, refresh=False, fromrepo=None,
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -400,14 +460,32 @@ def install(name=None, refresh=False, fromrepo=None,
     return ret
 
 
-def upgrade():
+def upgrade(refresh=True, pkgs=None, **kwargs):
     '''
     Run pkg upgrade, if pkgin used. Otherwise do nothing
 
-    Return a dict containing the new package names and versions::
+    refresh
+        Whether or not to refresh the package database before installing.
 
-        {'<package>': {'old': '<old-version>',
-                       'new': '<new-version>'}}
+    Multiple Package Upgrade Options:
+
+    pkgs
+        A list of packages to upgrade from a software repository. Must be
+        passed as a python list.
+
+        CLI Example:
+
+        .. code-block:: bash
+
+            salt '*' pkg.upgrade pkgs='["foo","bar"]'
+
+    Returns a dictionary containing the changes:
+
+    .. code-block:: python
+
+        {'<package>':  {'old': '<old-version>',
+                        'new': '<new-version>'}}
+
 
     CLI Example:
 
@@ -415,36 +493,42 @@ def upgrade():
 
         salt '*' pkg.upgrade
     '''
-    ret = {'changes': {},
-           'result': True,
-           'comment': '',
-           }
-
     pkgin = _check_pkgin()
     if not pkgin:
         # There is not easy way to upgrade packages with old package system
         return {}
 
+    if salt.utils.data.is_true(refresh):
+        refresh_db()
+
     old = list_pkgs()
 
-    cmd = [pkgin, '-y', 'fug']
-    call = __salt__['cmd.run_all'](cmd,
-                                   output_loglevel='trace',
-                                   python_shell=False,
-                                   redirect_stderr=True)
+    cmds = []
+    if not pkgs:
+        cmds.append([pkgin, '-y', 'full-upgrade'])
+    elif salt.utils.data.is_list(pkgs):
+        for pkg in pkgs:
+            cmds.append([pkgin, '-y', 'install', pkg])
+    else:
+        result = {'retcode': 1, 'reason': 'Ignoring the parameter `pkgs` because it is not a list!'}
+        log.error(result['reason'])
 
-    if call['retcode'] != 0:
-        ret['result'] = False
-        if call['stdout']:
-            ret['comment'] = call['stdout']
+    for cmd in cmds:
+        result = __salt__['cmd.run_all'](cmd,
+                                         output_loglevel='trace',
+                                         python_shell=False)
+        if result['retcode'] != 0:
+            break
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret['changes'] = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
-    for field in ret.keys():
-        if not ret[field] or ret[field] == '':
-            del ret[field]
+    if result['retcode'] != 0:
+        raise CommandExecutionError(
+            'Problem encountered upgrading packages',
+            info={'changes': ret, 'result': result}
+        )
 
     return ret
 
@@ -519,7 +603,7 @@ def remove(name=None, pkgs=None, **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -592,7 +676,7 @@ def file_list(package):
 
 def file_dict(*packages):
     '''
-    .. versionchanged: Boron
+    .. versionchanged: 2016.3.0
     List the files that belong to a package.
 
     CLI Examples:
@@ -620,7 +704,7 @@ def file_dict(*packages):
                 continue  # unexpected string
 
     ret = {'errors': errors, 'files': files}
-    for field in ret.keys():
+    for field in ret:
         if not ret[field] or ret[field] == '':
             del ret[field]
     return ret

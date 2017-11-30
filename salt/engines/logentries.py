@@ -7,7 +7,7 @@ An engine that sends events to the Logentries logging service.
 :depends:     ssl, certifi
 :platform:    all
 
-.. versionadded: Boron
+.. versionadded: 2016.3.0
 
 To enable this engine the master and/or minion will need the following
 python libraries
@@ -24,6 +24,9 @@ master config.
 :configuration:
 
     Example configuration
+
+    .. code-block:: yaml
+
         engines:
           - logentries:
             endpoint: data.logentries.com

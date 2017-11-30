@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Module for editing date/time settings on Mac OS X
+Module for editing date/time settings on macOS
 
  .. versionadded:: 2016.3.0
 '''
@@ -9,20 +9,21 @@ from __future__ import absolute_import
 # Import python libs
 from datetime import datetime
 
-# Import salt libs
-import salt.utils
-from salt.exceptions import CommandExecutionError
+# Import Salt libs
+import salt.utils.mac_utils
+import salt.utils.platform
+from salt.exceptions import SaltInvocationError
 
 __virtualname__ = 'timezone'
 
 
 def __virtual__():
     '''
-    Only for Mac OS X
+    Only for macOS
     '''
-    if not salt.utils.is_darwin():
+    if not salt.utils.platform.is_darwin():
         return (False, 'The mac_timezone module could not be loaded: '
-                       'module only works on Mac OS X systems.')
+                       'module only works on macOS systems.')
 
     return __virtualname__
 
@@ -36,6 +37,8 @@ def _get_date_time_format(dt_string):
 
     :return: The format of the passed dt_string
     :rtype: str
+
+    :raises: SaltInvocationError on Invalid Date/Time string
     '''
     valid_formats = [
         '%H:%M',
@@ -52,56 +55,15 @@ def _get_date_time_format(dt_string):
         except ValueError:
             continue
     msg = 'Invalid Date/Time Format: {0}'.format(dt_string)
-    raise CommandExecutionError(msg)
-
-
-def _execute_return_success(cmd):
-    '''
-    Helper function to execute the command
-    Returns: bool
-    '''
-    ret = __salt__['cmd.run_all'](cmd)
-
-    if ret['retcode'] != 0:
-        msg = 'Command failed: {0}'.format(ret['stderr'])
-        raise CommandExecutionError(msg)
-
-    return True
-
-
-def _execute_return_result(cmd):
-    ret = __salt__['cmd.run_all'](cmd)
-
-    if ret['retcode'] != 0:
-        msg = 'Command failed: {0}'.format(ret['stderr'])
-        raise CommandExecutionError(msg)
-
-    return ret['stdout']
-
-
-def _parse_return(data):
-    '''
-    Parse a return in the format:
-    ``Time Zone: America/Denver``
-    to return only:
-    ``America/Denver``
-
-    Returns: The value portion of a return
-    '''
-
-    if ': ' in data:
-        return data.split(': ')[1]
-    if ':\n' in data:
-        return data.split(':\n')[1]
-    else:
-        return data
+    raise SaltInvocationError(msg)
 
 
 def get_date():
     '''
     Displays the current date
 
-    Returns: the system date
+    :return: the system date
+    :rtype: str
 
     CLI Example:
 
@@ -109,8 +71,8 @@ def get_date():
 
         salt '*' timezone.get_date
     '''
-    ret = _execute_return_result('systemsetup -getdate')
-    return _parse_return(ret)
+    ret = salt.utils.mac_utils.execute_return_result('systemsetup -getdate')
+    return salt.utils.mac_utils.parse_return(ret)
 
 
 def set_date(date):
@@ -126,6 +88,9 @@ def set_date(date):
     :return: True if successful, False if not
     :rtype: bool
 
+    :raises: SaltInvocationError on Invalid Date format
+    :raises: CommandExecutionError on failure
+
     CLI Example:
 
     .. code-block:: bash
@@ -136,13 +101,7 @@ def set_date(date):
     dt_obj = datetime.strptime(date, date_format)
 
     cmd = 'systemsetup -setdate {0}'.format(dt_obj.strftime('%m:%d:%Y'))
-    _execute_return_success(cmd)
-
-    new_date = get_date()
-    date_format = _get_date_time_format(new_date)
-    new_dt_obj = datetime.strptime(new_date, date_format)
-
-    return dt_obj.strftime('%m:%d:%Y') == new_dt_obj.strftime('%m:%d:%Y')
+    return salt.utils.mac_utils.execute_return_success(cmd)
 
 
 def get_time():
@@ -158,8 +117,8 @@ def get_time():
 
         salt '*' timezone.get_time
     '''
-    ret = _execute_return_result('systemsetup -gettime')
-    return _parse_return(ret)
+    ret = salt.utils.mac_utils.execute_return_result('systemsetup -gettime')
+    return salt.utils.mac_utils.parse_return(ret)
 
 
 def set_time(time):
@@ -167,10 +126,13 @@ def set_time(time):
     Sets the current time. Must be in 24 hour format.
 
     :param str time: The time to set in 24 hour format.
-    The value must be double quoted.
+    The value must be double quoted. ie: '"17:46"'
 
     :return: True if successful, False if not
     :rtype: bool
+
+    :raises: SaltInvocationError on Invalid Time format
+    :raises: CommandExecutionError on failure
 
     CLI Example:
 
@@ -183,13 +145,7 @@ def set_time(time):
     dt_obj = datetime.strptime(time, time_format)
 
     cmd = 'systemsetup -settime {0}'.format(dt_obj.strftime('%H:%M:%S'))
-    _execute_return_success(cmd)
-
-    new_time = get_time()
-    time_format = _get_date_time_format(new_time)
-    new_dt_obj = datetime.strptime(new_time, time_format)
-
-    return dt_obj.strftime('%H:%M:%S') == new_dt_obj.strftime('%H:%M:%S')
+    return salt.utils.mac_utils.execute_return_success(cmd)
 
 
 def get_zone():
@@ -205,8 +161,8 @@ def get_zone():
 
         salt '*' timezone.get_zone
     '''
-    ret = _execute_return_result('systemsetup -gettimezone')
-    return _parse_return(ret)
+    ret = salt.utils.mac_utils.execute_return_result('systemsetup -gettimezone')
+    return salt.utils.mac_utils.parse_return(ret)
 
 
 def get_zonecode():
@@ -222,7 +178,7 @@ def get_zonecode():
 
         salt '*' timezone.get_zonecode
     '''
-    return _execute_return_result('date +%Z')
+    return salt.utils.mac_utils.execute_return_result('date +%Z')
 
 
 def get_offset():
@@ -238,7 +194,7 @@ def get_offset():
 
         salt '*' timezone.get_offset
     '''
-    return _execute_return_result('date +%z')
+    return salt.utils.mac_utils.execute_return_result('date +%z')
 
 
 def list_zones():
@@ -246,8 +202,8 @@ def list_zones():
     Displays a list of available time zones. Use this list when setting a
     time zone using ``timezone.set_zone``
 
-    :return: a string containing a list of time zones
-    :rtype: str
+    :return: a list of time zones
+    :rtype: list
 
     CLI Example:
 
@@ -255,8 +211,11 @@ def list_zones():
 
         salt '*' timezone.list_zones
     '''
-    ret = _execute_return_result('systemsetup -listtimezones')
-    return _parse_return(ret)
+    ret = salt.utils.mac_utils.execute_return_result(
+        'systemsetup -listtimezones')
+    zones = salt.utils.mac_utils.parse_return(ret)
+
+    return [x.strip() for x in zones.splitlines()]
 
 
 def set_zone(time_zone):
@@ -269,6 +228,9 @@ def set_zone(time_zone):
     :return: True if successful, False if not
     :rtype: bool
 
+    :raises: SaltInvocationError on Invalid Timezone
+    :raises: CommandExecutionError on failure
+
     CLI Example:
 
     .. code-block:: bash
@@ -276,10 +238,10 @@ def set_zone(time_zone):
         salt '*' timezone.set_zone America/Denver
     '''
     if time_zone not in list_zones():
-        return (False, 'Not a valid timezone. '
-                       'Use list_time_zones to find a valid time zone.')
+        raise SaltInvocationError('Invalid Timezone: {0}'.format(time_zone))
 
-    _execute_return_success('systemsetup -settimezone {0}'.format(time_zone))
+    salt.utils.mac_utils.execute_return_success(
+        'systemsetup -settimezone {0}'.format(time_zone))
 
     return time_zone in get_zone()
 
@@ -297,12 +259,7 @@ def zone_compare(time_zone):
 
         salt '*' timezone.zone_compare America/Boise
     '''
-    current = get_zone()
-
-    if current != time_zone:
-        return False
-
-    return True
+    return time_zone == get_zone()
 
 
 def get_using_network_time():
@@ -318,12 +275,11 @@ def get_using_network_time():
 
         salt '*' timezone.get_using_network_time
     '''
-    ret = _execute_return_result('systemsetup -getusingnetworktime')
+    ret = salt.utils.mac_utils.execute_return_result(
+        'systemsetup -getusingnetworktime')
 
-    if _parse_return(ret) == 'On':
-        return True
-    else:
-        return False
+    return salt.utils.mac_utils.validate_enabled(
+        salt.utils.mac_utils.parse_return(ret)) == 'on'
 
 
 def set_using_network_time(enable):
@@ -336,27 +292,21 @@ def set_using_network_time(enable):
     :return: True if successful, False if not
     :rtype: bool
 
+    :raises: CommandExecutionError on failure
+
     CLI Example:
 
     .. code-block:: bash
 
         salt '*' timezone.set_using_network_time True
     '''
-    if enable not in ['On', 'on', 'Off', 'off', True, False]:
-        msg = 'Must pass a boolean value. Passed: {0}'.format(enable)
-        raise CommandExecutionError(msg)
+    state = salt.utils.mac_utils.validate_enabled(enable)
 
-    if enable in ['On', 'on', True]:
-        enable = 'on'
-        expect = True
-    else:
-        enable = 'off'
-        expect = False
-    cmd = 'systemsetup -setusingnetworktime {0}'.format(enable)
+    cmd = 'systemsetup -setusingnetworktime {0}'.format(state)
+    salt.utils.mac_utils.execute_return_success(cmd)
 
-    _execute_return_success(cmd)
-
-    return expect == get_using_network_time()
+    return state == salt.utils.mac_utils.validate_enabled(
+        get_using_network_time())
 
 
 def get_time_server():
@@ -372,8 +322,9 @@ def get_time_server():
 
         salt '*' timezone.get_time_server
     '''
-    ret = _execute_return_result('systemsetup -getnetworktimeserver')
-    return _parse_return(ret)
+    ret = salt.utils.mac_utils.execute_return_result(
+        'systemsetup -getnetworktimeserver')
+    return salt.utils.mac_utils.parse_return(ret)
 
 
 def set_time_server(time_server='time.apple.com'):
@@ -382,11 +333,13 @@ def set_time_server(time_server='time.apple.com'):
     network time server.
 
     :param time_server: IP or DNS name of the network time server. If nothing is
-    passed the time server will be set to the OS X default of 'time.apple.com'
+    passed the time server will be set to the macOS default of 'time.apple.com'
     :type: str
 
     :return: True if successful, False if not
     :rtype: bool
+
+    :raises: CommandExecutionError on failure
 
     CLI Example:
 
@@ -395,6 +348,34 @@ def set_time_server(time_server='time.apple.com'):
         salt '*' timezone.set_time_server time.acme.com
     '''
     cmd = 'systemsetup -setnetworktimeserver {0}'.format(time_server)
-    _execute_return_success(cmd)
+    salt.utils.mac_utils.execute_return_success(cmd)
 
     return time_server in get_time_server()
+
+
+def get_hwclock():
+    '''
+    Get current hardware clock setting (UTC or localtime)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' timezone.get_hwclock
+    '''
+    # Need to search for a way to figure it out ...
+    return False
+
+
+def set_hwclock(clock):
+    '''
+    Sets the hardware clock to be either UTC or localtime
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' timezone.set_hwclock UTC
+    '''
+    # Need to search for a way to figure it out ...
+    return False

@@ -61,11 +61,12 @@ default gateway using the ``gateway`` parameter:
 '''
 from __future__ import absolute_import
 
-# Import python libs
+# Import Python libs
 import logging
 
-# Import salt libs
-import salt.utils
+# Import Salt libs
+import salt.utils.data
+import salt.utils.platform
 import salt.utils.validate.net
 from salt.ext.six.moves import range
 from salt.exceptions import CommandExecutionError
@@ -84,7 +85,7 @@ def __virtual__():
     Confine this module to Windows systems with the required execution module
     available.
     '''
-    if salt.utils.is_windows() and 'ip.get_interface' in __salt__:
+    if salt.utils.platform.is_windows() and 'ip.get_interface' in __salt__:
         return __virtualname__
     return False
 
@@ -181,6 +182,11 @@ def _changes(cur, dns_proto, dns_servers, ip_proto, ip_addrs, gateway):
             changes['dns_servers'] = dns_servers
     elif 'DNS servers configured through DHCP' in cur:
         cur_dns_servers = cur['DNS servers configured through DHCP']
+        if dns_proto == 'static':
+            # If we're currently set to 'dhcp' but moving to 'static', specify the changes.
+            if set(dns_servers or ['None']) != set(cur_dns_servers):
+                changes['dns_servers'] = dns_servers
+
     cur_ip_proto = 'static' if cur['DHCP enabled'] == 'No' else 'dhcp'
     cur_ip_addrs = _addrdict_to_ip_addrs(cur.get('ip_addrs', []))
     cur_gateway = cur.get('Default Gateway')
@@ -239,7 +245,7 @@ def managed(name,
         'name': name,
         'changes': {},
         'result': True,
-        'comment': 'Interface {0!r} is up to date.'.format(name)
+        'comment': 'Interface \'{0}\' is up to date.'.format(name)
     }
 
     dns_proto = str(dns_proto).lower()
@@ -264,12 +270,12 @@ def managed(name,
         if __salt__['ip.is_enabled'](name):
             if __opts__['test']:
                 ret['result'] = None
-                ret['comment'] = ('Interface {0!r} will be disabled'
+                ret['comment'] = ('Interface \'{0}\' will be disabled'
                                   .format(name))
             else:
                 ret['result'] = __salt__['ip.disable'](name)
                 if not ret['result']:
-                    ret['comment'] = ('Failed to disable interface {0!r}'
+                    ret['comment'] = ('Failed to disable interface \'{0}\''
                                       .format(name))
         else:
             ret['comment'] += ' (already disabled)'
@@ -282,13 +288,13 @@ def managed(name,
         if not currently_enabled:
             if __opts__['test']:
                 ret['result'] = None
-                ret['comment'] = ('Interface {0!r} will be enabled'
+                ret['comment'] = ('Interface \'{0}\' will be enabled'
                                   .format(name))
             else:
                 result = __salt__['ip.enable'](name)
                 if not result:
                     ret['result'] = False
-                    ret['comment'] = ('Failed to enable interface {0!r} to '
+                    ret['comment'] = ('Failed to enable interface \'{0}\' to '
                                       'make changes'.format(name))
                     return ret
 
@@ -303,7 +309,7 @@ def managed(name,
         if not old:
             ret['result'] = False
             ret['comment'] = ('Unable to get current configuration for '
-                              'interface {0!r}'.format(name))
+                              'interface \'{0}\''.format(name))
             return ret
 
         changes = _changes(old,
@@ -345,7 +351,7 @@ def managed(name,
 
             ret['result'] = None
             ret['comment'] = ('The following changes will be made to '
-                              'interface {0!r}: {1}'
+                              'interface \'{0}\': {1}'
                               .format(name, ' '.join(comments)))
             return ret
 
@@ -380,12 +386,12 @@ def managed(name,
                     )
 
         new = __salt__['ip.get_interface'](name)
-        ret['changes'] = salt.utils.compare_dicts(old, new)
+        ret['changes'] = salt.utils.data.compare_dicts(old, new)
         if _changes(new, dns_proto, dns_servers, ip_proto, ip_addrs, gateway):
             ret['result'] = False
             ret['comment'] = ('Failed to set desired configuration settings '
-                              'for interface {0!r}'.format(name))
+                              'for interface \'{0}\''.format(name))
         else:
             ret['comment'] = ('Successfully updated configuration for '
-                              'interface {0!r}'.format(name))
+                              'interface \'{0}\''.format(name))
         return ret

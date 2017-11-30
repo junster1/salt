@@ -91,7 +91,7 @@ The event stream can be easily consumed via JavaScript:
 Or via Python, using the Python module
 `websocket-client <https://pypi.python.org/pypi/websocket-client/>`_ for example.
 Or the tornado
-`client <http://tornado.readthedocs.org/en/latest/websocket.html#client-side-support>`_.
+`client <https://tornado.readthedocs.io/en/latest/websocket.html#client-side-support>`_.
 
 .. code-block:: python
 
@@ -201,7 +201,7 @@ The event stream can be easily consumed via JavaScript:
 Or via Python, using the Python module
 `websocket-client <https://pypi.python.org/pypi/websocket-client/>`_ for example.
 Or the tornado
-`client <http://tornado.readthedocs.org/en/latest/websocket.html#client-side-support>`_.
+`client <https://tornado.readthedocs.io/en/latest/websocket.html#client-side-support>`_.
 
 .. code-block:: python
 
@@ -297,10 +297,10 @@ from .saltnado import _check_cors_origin
 
 import tornado.gen
 
-import salt.utils
+import salt.utils.json
 import salt.netapi
 
-json = salt.utils.import_json()
+json = salt.utils.json.import_json()
 
 import logging
 logger = logging.getLogger()
@@ -354,7 +354,7 @@ class AllEventsHandler(tornado.websocket.WebSocketHandler):  # pylint: disable=W
             while True:
                 try:
                     event = yield self.application.event_listener.get_event(self)
-                    self.write_message(u'data: {0}\n\n'.format(json.dumps(event)))
+                    self.write_message(json.dumps(event))
                 except Exception as err:
                     logger.info('Error! Ending server side websocket connection. Reason = {0}'.format(str(err)))
                     break

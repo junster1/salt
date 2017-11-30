@@ -13,13 +13,14 @@ The postgres_users module is used to create and manage Postgres users.
 from __future__ import absolute_import
 
 # Import Python libs
+import datetime
+import logging
 
 # Import salt libs
-import logging
 
 # Salt imports
 from salt.modules import postgres
-import salt.ext.six as six
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,9 @@ def __virtual__():
     '''
     Only load if the postgres module is present
     '''
-    return 'postgres.user_exists' in __salt__
+    if 'postgres.user_exists' not in __salt__:
+        return (False, 'Unable to load postgres module.  Make sure `postgres.bins_dir` is set.')
+    return True
 
 
 def present(name,
@@ -43,6 +46,7 @@ def present(name,
             password=None,
             default_password=None,
             refresh_password=None,
+            valid_until=None,
             groups=None,
             user=None,
             maintenance_db=None,
@@ -93,10 +97,10 @@ def present(name,
         encrypted to the previous
         format if it is not already done.
 
-    default_passwoord
+    default_password
         The password used only when creating the user, unless password is set.
 
-        .. versionadded:: Boron
+        .. versionadded:: 2016.3.0
 
     refresh_password
         Password refresh flag
@@ -104,11 +108,14 @@ def present(name,
         Boolean attribute to specify whether to password comparison check
         should be performed.
 
-        If refresh_password is None or False, the password will be automatically
+        If refresh_password is ``True``, the password will be automatically
         updated without extra password change check.
 
         This behaviour makes it possible to execute in environments without
         superuser access available, e.g. Amazon RDS for PostgreSQL
+
+    valid_until
+        A date and time after which the role's password is no longer valid.
 
     groups
         A string of comma separated groups the user should be in
@@ -119,7 +126,7 @@ def present(name,
         .. versionadded:: 0.17.0
 
     db_user
-        Postres database username, if different from config or default.
+        Postgres database username, if different from config or default.
 
     db_password
         Postgres user's password, if any password, for a specified db_user.
@@ -140,14 +147,14 @@ def present(name,
     # default to encrypted passwords
     if encrypted is not False:
         encrypted = postgres._DEFAULT_PASSWORDS_ENCRYPTION
-    # maybe encrypt if if not already and necessary
+    # maybe encrypt if it's not already and necessary
     password = postgres._maybe_encrypt_password(name,
                                                 password,
                                                 encrypted=encrypted)
 
     if default_password is not None:
         default_password = postgres._maybe_encrypt_password(name,
-                                                            password,
+                                                            default_password,
                                                             encrypted=encrypted)
 
     db_args = {
@@ -166,7 +173,6 @@ def present(name,
     if user_attr is not None:
         mode = 'update'
 
-    # The user is not present, make it!
     cret = None
     update = {}
     if mode == 'update':
@@ -197,6 +203,18 @@ def present(name,
             update['superuser'] = superuser
         if password is not None and (refresh_password or user_attr['password'] != password):
             update['password'] = True
+        if valid_until is not None:
+            valid_until_dt = __salt__['postgres.psql_query'](
+                'SELECT \'{0}\'::timestamp(0) as dt;'.format(
+                    valid_until.replace('\'', '\'\'')),
+                **db_args)[0]['dt']
+            try:
+                valid_until_dt = datetime.datetime.strptime(
+                    valid_until_dt, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                valid_until_dt = None
+            if valid_until_dt != user_attr['expiry time']:
+                update['valid_until'] = valid_until
         if groups is not None:
             lgroups = groups
             if isinstance(groups, (six.string_types, six.text_type)):
@@ -226,6 +244,7 @@ def present(name,
             inherit=inherit,
             replication=replication,
             rolepassword=password,
+            valid_until=valid_until,
             groups=groups,
             **db_args)
     else:

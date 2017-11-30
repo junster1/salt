@@ -9,7 +9,7 @@ from __future__ import absolute_import
 import re
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 
 # Function alias to make sure not to shadow built-in's
 __func_alias__ = {
@@ -19,7 +19,7 @@ __func_alias__ = {
 
 
 def __virtual__():
-    if salt.utils.which('monit') is not None:
+    if salt.utils.path.which('monit') is not None:
         # The monit binary exists, let the module load
         return True
     return (False, 'The monit execution module cannot be loaded: the monit binary is not in the path.')
@@ -124,6 +124,8 @@ def summary(svc_name=''):
                 resource, name, status_ = (
                     parts[0].strip(), parts[1], parts[2].strip()
                 )
+                if svc_name != '' and svc_name != name:
+                    continue
                 if resource not in ret:
                     ret[resource] = {}
                 ret[resource][name] = status_
@@ -162,7 +164,7 @@ def status(svc_name=''):
 
 def reload_():
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Reload monit configuration
 
@@ -178,7 +180,7 @@ def reload_():
 
 def configtest():
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Test monit configuration syntax
 
@@ -206,7 +208,7 @@ def configtest():
 
 def version():
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Return version from monit -V
 
@@ -224,7 +226,7 @@ def version():
 
 def id_(reset=False):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Return monit unique id.
 
@@ -252,7 +254,7 @@ def id_(reset=False):
 
 def validate():
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Check all services
 

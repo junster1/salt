@@ -19,6 +19,13 @@ Module to provide Postgres compatibility to salt.
 
 :note: This module uses MD5 hashing which may not be compliant with certain
     security audits.
+
+:note: When installing postgres from the official postgres repos, on certain
+    linux distributions, either the psql or the initdb binary is *not*
+    automatically placed on the path. Add a configuration to the location
+    of the postgres bin's path to the relevant minion for this module::
+
+        postgres.bins_dir: '/usr/pgsql-9.5/bin/'
 '''
 
 # This pylint error is popping up where there are no colons?
@@ -27,7 +34,6 @@ Module to provide Postgres compatibility to salt.
 # Import python libs
 from __future__ import absolute_import
 import datetime
-import distutils.version  # pylint: disable=import-error,no-name-in-module
 import logging
 import hashlib
 import os
@@ -41,12 +47,16 @@ except ImportError:
     HAS_CSV = False
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 import salt.utils.itertools
-from salt.exceptions import SaltInvocationError
+import salt.utils.odict
+import salt.utils.path
+import salt.utils.stringutils
+from salt.exceptions import CommandExecutionError, SaltInvocationError
+from salt.utils.versions import LooseVersion as _LooseVersion
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import zip  # pylint: disable=import-error,redefined-builtin
 from salt.ext.six.moves import StringIO
 
@@ -89,6 +99,7 @@ _PRIVILEGES_OBJECTS = frozenset(
     'table',
     'group',
     'database',
+    'function',
     )
 )
 _PRIVILEGE_TYPE_MAP = {
@@ -98,18 +109,38 @@ _PRIVILEGE_TYPE_MAP = {
     'sequence': 'rwU',
     'schema': 'UC',
     'database': 'CTc',
+    'function': 'X',
 }
 
 
 def __virtual__():
     '''
-    Only load this module if the psql bin exists
+    Only load this module if the psql bin exist.
+    initdb bin might also be used, but its presence will be detected on runtime.
     '''
-    if all((salt.utils.which('psql'), salt.utils.which('initdb'), HAS_CSV)):
-        return True
-    return (False, 'The postgres execution module failed to load: '
-        'either the psql or initdb binary are not in the path or '
-        'the csv library is not available')
+    utils = ['psql']
+    if not HAS_CSV:
+        return False
+    for util in utils:
+        if not salt.utils.path.which(util):
+            if not _find_pg_binary(util):
+                return (False, '{0} was not found'.format(util))
+    return True
+
+
+def _find_pg_binary(util):
+    '''
+    ... versionadded::  2016.3.2
+
+    Helper function to locate various psql related binaries
+    '''
+    pg_bin_dir = __salt__['config.option']('postgres.bins_dir')
+    util_bin = salt.utils.path.which(util)
+    if not util_bin:
+        if pg_bin_dir:
+            return salt.utils.path.which(os.path.join(pg_bin_dir, util))
+    else:
+        return util_bin
 
 
 def _run_psql(cmd, runas=None, password=None, host=None, port=None, user=None):
@@ -127,7 +158,7 @@ def _run_psql(cmd, runas=None, password=None, host=None, port=None, user=None):
         if not host or host.startswith('/'):
             if 'FreeBSD' in __grains__['os_family']:
                 runas = 'pgsql'
-            if 'OpenBSD' in __grains__['os_family']:
+            elif 'OpenBSD' in __grains__['os_family']:
                 runas = '_postgresql'
             else:
                 runas = 'postgres'
@@ -141,8 +172,8 @@ def _run_psql(cmd, runas=None, password=None, host=None, port=None, user=None):
     if password is None:
         password = __salt__['config.option']('postgres.pass')
     if password is not None:
-        pgpassfile = salt.utils.mkstemp(text=True)
-        with salt.utils.fopen(pgpassfile, 'w') as fp_:
+        pgpassfile = salt.utils.files.mkstemp(text=True)
+        with salt.utils.files.fopen(pgpassfile, 'w') as fp_:
             fp_.write('{0}:{1}:*:{2}:{3}'.format(
                 'localhost' if not host or host.startswith('/') else host,
                 port if port else '*',
@@ -175,16 +206,18 @@ def _run_initdb(name,
     if runas is None:
         if 'FreeBSD' in __grains__['os_family']:
             runas = 'pgsql'
-        if 'OpenBSD' in __grains__['os_family']:
+        elif 'OpenBSD' in __grains__['os_family']:
             runas = '_postgresql'
         else:
             runas = 'postgres'
 
     if user is None:
         user = runas
-
+    _INITDB_BIN = _find_pg_binary('initdb')
+    if not _INITDB_BIN:
+        raise CommandExecutionError('initdb executable not found.')
     cmd = [
-        salt.utils.which('initdb'),
+        _INITDB_BIN,
         '--pgdata={0}'.format(name),
         '--username={0}'.format(user),
         '--auth={0}'.format(auth),
@@ -195,8 +228,8 @@ def _run_initdb(name,
         cmd.append('--locale={0}'.format(locale))
 
     if password is not None:
-        pgpassfile = salt.utils.mkstemp(text=True)
-        with salt.utils.fopen(pgpassfile, 'w') as fp_:
+        pgpassfile = salt.utils.files.mkstemp(text=True)
+        with salt.utils.files.fopen(pgpassfile, 'w') as fp_:
             fp_.write('{0}'.format(password))
             __salt__['file.chown'](pgpassfile, runas, '')
         cmd.extend([
@@ -262,7 +295,7 @@ def _parsed_version(user=None, host=None, port=None, maintenance_db=None,
     )
 
     if psql_version:
-        return distutils.version.LooseVersion(psql_version)
+        return _LooseVersion(psql_version)
     else:
         log.warning('Attempt to parse version of Postgres server failed. '
                     'Is the server responding?')
@@ -302,10 +335,11 @@ def _psql_cmd(*args, **kwargs):
         kwargs.get('port'),
         kwargs.get('maintenance_db'),
         kwargs.get('password'))
-
-    cmd = [salt.utils.which('psql'),
+    _PSQL_BIN = _find_pg_binary('psql')
+    cmd = [_PSQL_BIN,
            '--no-align',
            '--no-readline',
+           '--no-psqlrc',
            '--no-password']  # It is never acceptable to issue a password prompt.
     if user:
         cmd += ['--username', user]
@@ -337,7 +371,7 @@ def _psql_prepare_and_run(cmd,
 
 
 def psql_query(query, user=None, host=None, port=None, maintenance_db=None,
-               password=None, runas=None):
+               password=None, runas=None, write=False):
     '''
     Run an SQL-Query and return the results as a list. This command
     only supports SELECT statements.  This limitation can be worked around
@@ -345,6 +379,30 @@ def psql_query(query, user=None, host=None, port=None, maintenance_db=None,
 
     WITH updated AS (UPDATE pg_authid SET rolconnlimit = 2000 WHERE
     rolname = 'rolename' RETURNING rolconnlimit) SELECT * FROM updated;
+
+    query
+        The query string.
+
+    user
+        Database username, if different from config or default.
+
+    host
+        Database host, if different from config or default.
+
+    port
+        Database port, if different from the config or default.
+
+    maintenance_db
+        The database to run the query against.
+
+    password
+        User password, if different from the config or default.
+
+    runas
+        User to run the command as.
+
+    write
+        Mark query as READ WRITE transaction.
 
     CLI Example:
 
@@ -356,6 +414,11 @@ def psql_query(query, user=None, host=None, port=None, maintenance_db=None,
 
     csv_query = 'COPY ({0}) TO STDOUT WITH CSV HEADER'.format(
         query.strip().rstrip(';'))
+
+    # Mark transaction as R/W to achieve write will be allowed
+    # Commit is necessary due to transaction
+    if write:
+        csv_query = 'START TRANSACTION READ WRITE; {0}; COMMIT TRANSACTION;'.format(csv_query)
 
     # always use the same datestyle settings to allow parsing dates
     # regardless what server settings are configured
@@ -377,6 +440,10 @@ def psql_query(query, user=None, host=None, port=None, maintenance_db=None,
             header = row
             continue
         ret.append(dict(zip(header, row)))
+
+    # Remove 'COMMIT' message if query is inside R/W transction
+    if write:
+        ret = ret[0:-1]
 
     return ret
 
@@ -435,6 +502,16 @@ def db_exists(name, user=None, host=None, port=None, maintenance_db=None,
     return name in databases
 
 
+# TODO properly implemented escaping
+def _quote_ddl_value(value, quote="'"):
+    if value is None:
+        return None
+    if quote in value:  # detect trivial sqli
+        raise SaltInvocationError(
+            'Unsupported character {0} in value: {1}'.format(quote, value))
+    return "{quote}{value}{quote}".format(quote=quote, value=value)
+
+
 def db_create(name,
               user=None,
               host=None,
@@ -465,16 +542,16 @@ def db_create(name,
     query = 'CREATE DATABASE "{0}"'.format(name)
 
     # "With"-options to create a database
-    with_args = salt.utils.odict.OrderedDict({
+    with_args = salt.utils.odict.OrderedDict([
+        ('TABLESPACE', _quote_ddl_value(tablespace, '"')),
         # owner needs to be enclosed in double quotes so postgres
         # doesn't get thrown by dashes in the name
-        'OWNER': owner and '"{0}"'.format(owner),
-        'TEMPLATE': template,
-        'ENCODING': encoding and '\'{0}\''.format(encoding),
-        'LC_COLLATE': lc_collate and '\'{0}\''.format(lc_collate),
-        'LC_CTYPE': lc_ctype and '\'{0}\''.format(lc_ctype),
-        'TABLESPACE': tablespace,
-    })
+        ('OWNER', _quote_ddl_value(owner, '"')),
+        ('TEMPLATE', template),
+        ('ENCODING', _quote_ddl_value(encoding)),
+        ('LC_COLLATE', _quote_ddl_value(lc_collate)),
+        ('LC_CTYPE', _quote_ddl_value(lc_ctype)),
+    ])
     with_chunks = []
     for key, value in with_args.items():
         if value is not None:
@@ -636,7 +713,7 @@ def tablespace_create(name, location, options=None, owner=None, user=None,
         owner_query = 'OWNER "{0}"'.format(owner)
         # should come out looking like: 'OWNER postgres'
     if options:
-        optionstext = ['{0} = {1}'.format(k, v) for k, v in options.items()]
+        optionstext = ['{0} = {1}'.format(k, v) for k, v in six.iteritems(options)]
         options_query = 'WITH ( {0} )'.format(', '.join(optionstext))
         # should come out looking like: 'WITH ( opt1 = 1.0, opt2 = 4.0 )'
     query = 'CREATE TABLESPACE "{0}" {1} LOCATION \'{2}\' {3}'.format(name,
@@ -747,11 +824,11 @@ def user_list(user=None, host=None, port=None, maintenance_db=None,
                           password=password,
                           runas=runas)
     if ver:
-        if ver >= distutils.version.LooseVersion('9.1'):
+        if ver >= _LooseVersion('9.1'):
             replication_column = 'pg_roles.rolreplication'
         else:
             replication_column = 'NULL'
-        if ver >= distutils.version.LooseVersion('9.5'):
+        if ver >= _LooseVersion('9.5'):
             rolcatupdate_column = 'NULL'
         else:
             rolcatupdate_column = 'pg_roles.rolcatupdate'
@@ -809,8 +886,8 @@ def user_list(user=None, host=None, port=None, maintenance_db=None,
         for date_key in ('expiry time',):
             try:
                 retrow[date_key] = datetime.datetime.strptime(
-                    row['date_key'], '%Y-%m-%d %H:%M:%S')
-            except (ValueError, KeyError):
+                    row[date_key], '%Y-%m-%d %H:%M:%S')
+            except ValueError:
                 retrow[date_key] = None
         retrow['defaults variables'] = row['defaults variables']
         if return_password:
@@ -926,9 +1003,11 @@ def _maybe_encrypt_password(role,
     '''
     pgsql passwords are md5 hashes of the string: 'md5{password}{rolename}'
     '''
+    if password is not None:
+        password = str(password)
     if encrypted and password and not password.startswith('md5'):
         password = "md5{0}".format(
-            hashlib.md5(salt.utils.to_bytes('{0}{1}'.format(password, role))).hexdigest())
+            hashlib.md5(salt.utils.stringutils.to_bytes('{0}{1}'.format(password, role))).hexdigest())
     return password
 
 
@@ -946,6 +1025,7 @@ def _role_cmd_args(name,
                    groups=None,
                    replication=None,
                    rolepassword=None,
+                   valid_until=None,
                    db_role=None):
     if createuser is not None and superuser is None:
         superuser = createuser
@@ -962,6 +1042,7 @@ def _role_cmd_args(name,
         encrypted = _DEFAULT_PASSWORDS_ENCRYPTION
     skip_passwd = False
     escaped_password = ''
+    escaped_valid_until = ''
     if not (
         rolepassword is not None
         # first is passwd set
@@ -979,6 +1060,10 @@ def _role_cmd_args(name,
             _maybe_encrypt_password(name,
                                     rolepassword.replace('\'', '\'\''),
                                     encrypted=encrypted))
+    if isinstance(valid_until, six.string_types) and bool(valid_until):
+        escaped_valid_until = '\'{0}\''.format(
+            valid_until.replace('\'', '\'\''),
+        )
     skip_superuser = False
     if bool(db_role) and bool(superuser) == bool(db_role['superuser']):
         skip_superuser = True
@@ -1002,6 +1087,10 @@ def _role_cmd_args(name,
         {'flag': 'PASSWORD', 'test': bool(rolepassword),
          'skip': skip_passwd,
          'addtxt': escaped_password},
+        {'flag': 'VALID UNTIL',
+         'test': bool(valid_until),
+         'skip': valid_until is None,
+         'addtxt': escaped_valid_until},
     )
     for data in flags:
         sub_cmd = _add_role_flag(sub_cmd, **data)
@@ -1031,6 +1120,7 @@ def _role_create(name,
                  inherit=None,
                  replication=None,
                  rolepassword=None,
+                 valid_until=None,
                  typ_='role',
                  groups=None,
                  runas=None):
@@ -1059,7 +1149,8 @@ def _role_create(name,
         superuser=superuser,
         groups=groups,
         replication=replication,
-        rolepassword=rolepassword
+        rolepassword=rolepassword,
+        valid_until=valid_until
     ))
     ret = _psql_prepare_and_run(['-c', sub_cmd],
                                 runas=runas, host=host, user=user, port=port,
@@ -1085,6 +1176,7 @@ def user_create(username,
                 superuser=None,
                 replication=None,
                 rolepassword=None,
+                valid_until=None,
                 groups=None,
                 runas=None):
     '''
@@ -1096,7 +1188,7 @@ def user_create(username,
 
         salt '*' postgres.user_create 'username' user='user' \\
                 host='hostname' port='port' password='password' \\
-                rolepassword='rolepassword'
+                rolepassword='rolepassword' valid_until='valid_until'
     '''
     return _role_create(username,
                         typ_='user',
@@ -1115,6 +1207,7 @@ def user_create(username,
                         superuser=superuser,
                         replication=replication,
                         rolepassword=rolepassword,
+                        valid_until=valid_until,
                         groups=groups,
                         runas=runas)
 
@@ -1136,6 +1229,7 @@ def _role_update(name,
                  superuser=None,
                  replication=None,
                  rolepassword=None,
+                 valid_until=None,
                  groups=None,
                  runas=None):
     '''
@@ -1171,6 +1265,7 @@ def _role_update(name,
         groups=groups,
         replication=replication,
         rolepassword=rolepassword,
+        valid_until=valid_until,
         db_role=role
     ))
     ret = _psql_prepare_and_run(['-c', sub_cmd],
@@ -1197,6 +1292,7 @@ def user_update(username,
                 connlimit=None,
                 replication=None,
                 rolepassword=None,
+                valid_until=None,
                 groups=None,
                 runas=None):
     '''
@@ -1208,7 +1304,7 @@ def user_update(username,
 
         salt '*' postgres.user_update 'username' user='user' \\
                 host='hostname' port='port' password='password' \\
-                rolepassword='rolepassword'
+                rolepassword='rolepassword' valid_until='valid_until'
     '''
     return _role_update(username,
                         user=user,
@@ -1227,6 +1323,7 @@ def user_update(username,
                         superuser=superuser,
                         replication=replication,
                         rolepassword=rolepassword,
+                        valid_until=valid_until,
                         groups=groups,
                         runas=runas)
 
@@ -1877,7 +1974,7 @@ def schema_create(dbname, name, owner=None,
     '''
 
     # check if schema exists
-    if schema_exists(dbname, name,
+    if schema_exists(dbname, name, user=user,
                      db_user=db_user, db_password=db_password,
                      db_host=db_host, db_port=db_port):
         log.info('\'{0}\' already exists in \'{1}\''.format(name, dbname))
@@ -1932,7 +2029,7 @@ def schema_remove(dbname, name,
     '''
 
     # check if schema exists
-    if not schema_exists(dbname, name,
+    if not schema_exists(dbname, name, user=None,
                          db_user=db_user, db_password=db_password,
                          db_host=db_host, db_port=db_port):
         log.info('Schema \'{0}\' does not exist in \'{1}\''.format(name, dbname))
@@ -1946,7 +2043,7 @@ def schema_remove(dbname, name,
         maintenance_db=dbname,
         host=db_host, user=db_user, port=db_port, password=db_password)
 
-    if not schema_exists(dbname, name,
+    if not schema_exists(dbname, name, user,
                          db_user=db_user, db_password=db_password,
                          db_host=db_host, db_port=db_port):
         return True
@@ -1955,7 +2052,7 @@ def schema_remove(dbname, name,
         return False
 
 
-def schema_exists(dbname, name,
+def schema_exists(dbname, name, user=None,
                   db_user=None, db_password=None,
                   db_host=None, db_port=None):
     '''
@@ -1973,6 +2070,9 @@ def schema_exists(dbname, name,
     name
        Schema name we look for
 
+    user
+        The system user the operation should be performed on behalf of
+
     db_user
         database username if different from config or default
 
@@ -1987,14 +2087,14 @@ def schema_exists(dbname, name,
 
     '''
     return bool(
-        schema_get(dbname, name,
+        schema_get(dbname, name, user=user,
                    db_user=db_user,
                    db_host=db_host,
                    db_port=db_port,
                    db_password=db_password))
 
 
-def schema_get(dbname, name,
+def schema_get(dbname, name, user=None,
                db_user=None, db_password=None,
                db_host=None, db_port=None):
     '''
@@ -2012,6 +2112,9 @@ def schema_get(dbname, name,
     name
        Schema name we look for
 
+    user
+        The system user the operation should be performed on behalf of
+
     db_user
         database username if different from config or default
 
@@ -2024,7 +2127,7 @@ def schema_get(dbname, name,
     db_port
         Database port if different from config or default
     '''
-    all_schemas = schema_list(dbname,
+    all_schemas = schema_list(dbname, user=user,
                               db_user=db_user,
                               db_host=db_host,
                               db_port=db_port,
@@ -2036,7 +2139,7 @@ def schema_get(dbname, name,
         return False
 
 
-def schema_list(dbname,
+def schema_list(dbname, user=None,
                 db_user=None, db_password=None,
                 db_host=None, db_port=None):
     '''
@@ -2050,6 +2153,9 @@ def schema_list(dbname,
 
     dbname
         Database name we query on
+
+    user
+        The system user the operation should be performed on behalf of
 
     db_user
         database username if different from config or default
@@ -2075,7 +2181,7 @@ def schema_list(dbname,
         'LEFT JOIN pg_roles ON pg_roles.oid = pg_namespace.nspowner '
     ]))
 
-    rows = psql_query(query,
+    rows = psql_query(query, runas=user,
                       host=db_host,
                       user=db_user,
                       port=db_port,
@@ -2099,7 +2205,7 @@ def language_list(
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Return a list of languages in a database.
 
@@ -2155,7 +2261,7 @@ def language_exists(
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Checks if language exists in a database.
 
@@ -2204,7 +2310,7 @@ def language_create(name,
                     password=None,
                     runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Installs a language into a database
 
@@ -2261,7 +2367,7 @@ def language_remove(name,
                     password=None,
                     runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Removes a language from a database
 
@@ -2343,16 +2449,16 @@ def _make_privileges_list_query(name, object_type, prepend):
             "WHERE nspname = '{0}'",
             'ORDER BY nspname',
         ])).format(name)
-    # elif object_type == 'function':
-    #     query = (' '.join([
-    #         'SELECT proacl AS name',
-    #         'FROM pg_catalog.pg_proc p',
-    #         'JOIN pg_catalog.pg_namespace n',
-    #         'ON n.oid = p.pronamespace',
-    #         "WHERE nspname = '{0}'",
-    #         "AND proname = '{1}'",
-    #         'ORDER BY proname, proargtypes',
-    #     ])).format(prepend, name)
+    elif object_type == 'function':
+        query = (' '.join([
+            'SELECT proacl AS name',
+            'FROM pg_catalog.pg_proc p',
+            'JOIN pg_catalog.pg_namespace n',
+            'ON n.oid = p.pronamespace',
+            "WHERE nspname = '{0}'",
+            "AND p.oid::regprocedure::text = '{1}'",
+            'ORDER BY proname, proargtypes',
+        ])).format(prepend, name)
     elif object_type == 'tablespace':
         query = (' '.join([
             'SELECT spcacl AS name',
@@ -2429,6 +2535,16 @@ def _get_object_owner(name,
             'ON n.nspowner = r.oid',
             "WHERE nspname = '{0}'",
         ])).format(name)
+    elif object_type == 'function':
+        query = (' '.join([
+            'SELECT rolname AS name',
+            'FROM pg_catalog.pg_proc p',
+            'JOIN pg_catalog.pg_namespace n',
+            'ON n.oid = p.pronamespace',
+            "WHERE nspname = '{0}'",
+            "AND p.oid::regprocedure::text = '{1}'",
+            'ORDER BY proname, proargtypes',
+        ])).format(prepend, name)
     elif object_type == 'tablespace':
         query = (' '.join([
             'SELECT rolname AS name',
@@ -2535,7 +2651,7 @@ def privileges_list(
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Return a list of privileges for the specified object.
 
@@ -2558,6 +2674,7 @@ def privileges_list(
        - language
        - database
        - group
+       - function
 
     prepend
         Table and Sequence object types live under a schema so this should be
@@ -2635,7 +2752,7 @@ def has_privileges(name,
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Check if a role has the specified privileges on an object
 
@@ -2647,7 +2764,7 @@ def has_privileges(name,
         SELECT,INSERT maintenance_db=db_name
 
     name
-       Name of the role whose privilages should be checked on object_type
+       Name of the role whose privileges should be checked on object_type
 
     object_name
        Name of the object on which the check is to be performed
@@ -2662,9 +2779,10 @@ def has_privileges(name,
        - language
        - database
        - group
+       - function
 
     privileges
-       Comma separated list of privilages to check, from the list below:
+       Comma separated list of privileges to check, from the list below:
 
        - INSERT
        - CREATE
@@ -2757,7 +2875,7 @@ def privileges_grant(name,
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Grant privileges on a postgres object
 
@@ -2769,7 +2887,7 @@ def privileges_grant(name,
         SELECT,UPDATE maintenance_db=db_name
 
     name
-       Name of the role to which privilages should be granted
+       Name of the role to which privileges should be granted
 
     object_name
        Name of the object on which the grant is to be performed
@@ -2784,9 +2902,10 @@ def privileges_grant(name,
        - language
        - database
        - group
+       - function
 
     privileges
-       Comma separated list of privilages to grant, from the list below:
+       Comma separated list of privileges to grant, from the list below:
 
        - INSERT
        - CREATE
@@ -2842,22 +2961,33 @@ def privileges_grant(name,
     _grants = ','.join(_privs)
 
     if object_type in ['table', 'sequence']:
-        on_part = '{0}.{1}'.format(prepend, object_name)
+        on_part = '{0}."{1}"'.format(prepend, object_name)
+    elif object_type == 'function':
+        on_part = '{0}'.format(object_name)
     else:
-        on_part = object_name
+        on_part = '"{0}"'.format(object_name)
 
     if grant_option:
         if object_type == 'group':
-            query = 'GRANT {0} TO {1} WITH ADMIN OPTION'.format(
+            query = 'GRANT {0} TO "{1}" WITH ADMIN OPTION'.format(
                 object_name, name)
+        elif (object_type in ('table', 'sequence') and
+                object_name.upper() == 'ALL'):
+            query = 'GRANT {0} ON ALL {1}S IN SCHEMA {2} TO ' \
+                    '"{3}" WITH GRANT OPTION'.format(
+                _grants, object_type.upper(), prepend, name)
         else:
-            query = 'GRANT {0} ON {1} {2} TO {3} WITH GRANT OPTION'.format(
+            query = 'GRANT {0} ON {1} {2} TO "{3}" WITH GRANT OPTION'.format(
                 _grants, object_type.upper(), on_part, name)
     else:
         if object_type == 'group':
-            query = 'GRANT {0} TO {1}'.format(object_name, name)
+            query = 'GRANT {0} TO "{1}"'.format(object_name, name)
+        elif (object_type in ('table', 'sequence') and
+                object_name.upper() == 'ALL'):
+            query = 'GRANT {0} ON ALL {1}S IN SCHEMA {2} TO "{3}"'.format(
+                _grants, object_type.upper(), prepend, name)
         else:
-            query = 'GRANT {0} ON {1} {2} TO {3}'.format(
+            query = 'GRANT {0} ON {1} {2} TO "{3}"'.format(
                 _grants, object_type.upper(), on_part, name)
 
     ret = _psql_prepare_and_run(['-c', query],
@@ -2883,7 +3013,7 @@ def privileges_revoke(name,
         password=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Revoke privileges on a postgres object
 
@@ -2895,7 +3025,7 @@ def privileges_revoke(name,
         SELECT,UPDATE maintenance_db=db_name
 
     name
-       Name of the role whose privilages should be revoked
+       Name of the role whose privileges should be revoked
 
     object_name
        Name of the object on which the revoke is to be performed
@@ -2910,9 +3040,10 @@ def privileges_revoke(name,
        - language
        - database
        - group
+       - function
 
     privileges
-       Comma separated list of privilages to revoke, from the list below:
+       Comma separated list of privileges to revoke, from the list below:
 
        - INSERT
        - CREATE
@@ -2989,7 +3120,7 @@ def datadir_init(name,
         locale=None,
         runas=None):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Initializes a postgres data directory
 
@@ -3037,7 +3168,7 @@ def datadir_init(name,
 
 def datadir_exists(name):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Checks if postgres data directory has been initialized
 

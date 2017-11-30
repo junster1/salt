@@ -10,8 +10,11 @@ import logging
 import re
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 from salt.exceptions import CommandExecutionError, SaltInvocationError
+
+# Import 3rd-party libs
+from salt.ext import six
 
 # Set up logger
 log = logging.getLogger(__name__)
@@ -32,7 +35,7 @@ def __virtual__():
     '''
     if __grains__['kernel'] != 'Linux':
         return (False, 'The mdadm execution module cannot be loaded: only available on Linux.')
-    if not salt.utils.which('mdadm'):
+    if not salt.utils.path.which('mdadm'):
         return (False, 'The mdadm execution module cannot be loaded: the mdadm binary is not in the path.')
     return __virtualname__
 
@@ -290,12 +293,15 @@ def save_config():
     try:
         vol_d = dict([(line.split()[1], line) for line in scan])
         for vol in vol_d:
-            pattern = r'^ARRAY\s+{0}'.format(re.escape(vol))
+            pattern = r'^ARRAY\s+{0}.*$'.format(re.escape(vol))
             __salt__['file.replace'](cfg_file, pattern, vol_d[vol], append_if_not_found=True)
     except SaltInvocationError:  # File is missing
         __salt__['file.write'](cfg_file, args=scan)
 
-    return __salt__['cmd.run']('update-initramfs -u')
+    if __grains__.get('os_family') == 'Debian':
+        return __salt__['cmd.run']('update-initramfs -u')
+    elif __grains__.get('os_family') == 'RedHat':
+        return __salt__['cmd.run']('dracut --force')
 
 
 def assemble(name,
@@ -341,7 +347,7 @@ def assemble(name,
                 opts.append(kwargs[key])
 
     # Devices may have been written with a blob:
-    if isinstance(devices, str):
+    if isinstance(devices, six.string_types):
         devices = devices.split(',')
 
     cmd = ['mdadm', '-A', name, '-v'] + opts + devices
@@ -350,3 +356,40 @@ def assemble(name,
         return cmd
     elif test_mode is False:
         return __salt__['cmd.run'](cmd, python_shell=False)
+
+
+def examine(device):
+    '''
+    Show detail for a specified RAID component device
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' raid.examine '/dev/sda1'
+    '''
+    res = __salt__['cmd.run_stdout']('mdadm -Y -E {0}'.format(device), output_loglevel='trace', python_shell=False)
+    ret = {}
+
+    for line in res.splitlines():
+        name, var = line.partition("=")[::2]
+        ret[name] = var
+    return ret
+
+
+def add(name, device):
+    '''
+    Add new device to RAID array.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' raid.add /dev/md0 /dev/sda1
+
+    '''
+
+    cmd = 'mdadm --manage {0} --add {1}'.format(name, device)
+    if __salt__['cmd.retcode'](cmd) == 0:
+        return True
+    return False

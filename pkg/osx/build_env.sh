@@ -2,25 +2,31 @@
 
 ############################################################################
 #
-# Title: Build Environment Script for OSX
+# Title: Build Environment Script for macOS
 # Authors: CR Oldham, Shane Lee
 # Date: December 2015
 #
-# Description: This script sets up a build environment for salt on OSX.
+# Description: This script sets up a build environment for Salt on macOS.
 #
 # Requirements:
 #     - XCode Command Line Tools (xcode-select --install)
 #
 # Usage:
-#     This script is not passed any parameters
+#     This script can be passed 1 parameter
+#       $1 : <python version> : the version of Python to use for the
+#                               build environment. Default is 2
 #
 #     Example:
-#         The following will set up a build environment for salt on OSX
+#         The following will set up a Python 3 build environment for Salt
+#         on macOS
 #
-#         ./dev_env.sh
+#         ./dev_env.sh 3
 #
 ############################################################################
 
+############################################################################
+# Set to Exit on all Errors
+############################################################################
 trap 'quit_on_error $LINENO $BASH_COMMAND' ERR
 
 quit_on_error() {
@@ -29,10 +35,18 @@ quit_on_error() {
 }
 
 ############################################################################
+# Check passed parameters, set defaults
+############################################################################
+if [ "$1" == "" ]; then
+    PYVER=2
+else
+    PYVER=$1
+fi
+
+############################################################################
 # Parameters Required for the script to function properly
 ############################################################################
-
-echo -n -e "\033]0;Build_Evn: Variables\007"
+echo -n -e "\033]0;Build_Env: Variables\007"
 
 # This is needed to allow the some test suites (zmq) to pass
 ulimit -n 1200
@@ -43,24 +57,37 @@ SHADIR=$SCRIPTDIR/shasums
 PKG_CONFIG_PATH=/opt/salt/lib/pkgconfig
 CFLAGS="-I/opt/salt/include"
 LDFLAGS="-L/opt/salt/lib"
+if [ "$PYVER" == "2" ]; then
+    PYDIR=/opt/salt/lib/python2.7
+    PYTHON=/opt/salt/bin/python
+    PIP=/opt/salt/bin/pip
+else
+    PYDIR=/opt/salt/lib/python3.5
+    PYTHON=/opt/salt/bin/python3
+    PIP=/opt/salt/bin/pip3
+fi
 
 ############################################################################
 # Determine Which XCode is being used (XCode or XCode Command Line Tools)
 ############################################################################
 # Prefer Xcode command line tools over any other gcc installed (e.g. MacPorts,
 # Fink, Brew)
-# Check for Xcode Commane Line Tools first
+# Check for Xcode Command Line Tools first
 if [ -d '/Library/Developer/CommandLineTools/usr/bin' ]; then
     PATH=/Library/Developer/CommandLineTools/usr/bin:/opt/salt/bin:$PATH
     MAKE=/Library/Developer/CommandLineTools/usr/bin/make
-else
+elif [ -d '/Applications/Xcode.app/Contents/Developer/usr/bin' ]; then
     PATH=/Applications/Xcode.app/Contents/Developer/usr/bin:/opt/salt/bin:$PATH
     MAKE=/Applications/Xcode.app/Contents/Developer/usr/bin/make
+else
+    echo "No installation of XCode found. This script requires XCode."
+    exit -1
 fi
 export PATH
 
 ############################################################################
-# Functions Required for the script
+# Download Function
+# - Downloads and verifies the MD5
 ############################################################################
 download(){
     if [ -z "$1" ]; then
@@ -75,7 +102,7 @@ download(){
     echo "################################################################################"
     echo "Retrieving $PKGNAME"
     echo "################################################################################"
-    curl -O# $URL
+    curl -LO# $URL
 
     echo "################################################################################"
     echo "Comparing Sha512 Hash"
@@ -98,7 +125,8 @@ download(){
 ############################################################################
 # Ensure Paths are present and clean
 ############################################################################
-echo -n -e "\033]0;Build_Evn: Clean\007"
+echo -n -e "\033]0;Build_Env: Clean\007"
+
 # Make sure /opt/salt is clean
 sudo rm -rf /opt/salt
 sudo mkdir -p /opt/salt
@@ -112,11 +140,10 @@ BUILDDIR=$SCRIPTDIR/build
 ############################################################################
 # Download and install pkg-config
 ############################################################################
+echo -n -e "\033]0;Build_Env: pkg-config\007"
 
-echo -n -e "\033]0;Build_Evn: pkg-config\007"
-
-PKGURL="http://pkgconfig.freedesktop.org/releases/pkg-config-0.29.tar.gz"
-PKGDIR="pkg-config-0.29"
+PKGURL="http://pkgconfig.freedesktop.org/releases/pkg-config-0.29.2.tar.gz"
+PKGDIR="pkg-config-0.29.2"
 
 download $PKGURL
 
@@ -127,17 +154,15 @@ cd $PKGDIR
 env LDFLAGS="-framework CoreFoundation -framework Carbon" ./configure --prefix=/opt/salt --with-internal-glib
 $MAKE
 $MAKE check
-sudo $MAKE install
-
+sudo -H $MAKE install
 
 ############################################################################
 # Download and install libsodium
 ############################################################################
+echo -n -e "\033]0;Build_Env: libsodium\007"
 
-echo -n -e "\033]0;Build_Evn: libsodium\007"
-
-PKGURL="https://download.libsodium.org/libsodium/releases/libsodium-1.0.7.tar.gz"
-PKGDIR="libsodium-1.0.7"
+PKGURL="https://download.libsodium.org/libsodium/releases/libsodium-1.0.13.tar.gz"
+PKGDIR="libsodium-1.0.13"
 
 download $PKGURL
 
@@ -148,17 +173,15 @@ cd $PKGDIR
 ./configure --prefix=/opt/salt
 $MAKE
 $MAKE check
-sudo $MAKE install
-
+sudo -H $MAKE install
 
 ############################################################################
 # Download and install zeromq
 ############################################################################
+echo -n -e "\033]0;Build_Env: zeromq\007"
 
-echo -n -e "\033]0;Build_Evn: zeromq\007"
-
-PKGURL="http://download.zeromq.org/zeromq-4.1.3.tar.gz"
-PKGDIR="zeromq-4.1.3"
+PKGURL="http://download.zeromq.org/zeromq-4.1.4.tar.gz"
+PKGDIR="zeromq-4.1.4"
 
 download $PKGURL
 
@@ -169,165 +192,86 @@ cd $PKGDIR
 ./configure --prefix=/opt/salt
 $MAKE
 $MAKE check
-sudo $MAKE install
-
+sudo -H $MAKE install
 
 ############################################################################
 # Download and install OpenSSL
 ############################################################################
+echo -n -e "\033]0;Build_Env: OpenSSL\007"
 
-echo -n -e "\033]0;Build_Evn: OpenSSL\007"
-
-PKGURL="http://openssl.org/source/openssl-1.0.2e.tar.gz"
-PKGDIR="openssl-1.0.2e"
+PKGURL="http://openssl.org/source/openssl-1.0.2l.tar.gz"
+PKGDIR="openssl-1.0.2l"
 
 download $PKGURL
 
 echo "################################################################################"
-echo "Building OpenSSL 1.0.2e"
+echo "Building OpenSSL"
 echo "################################################################################"
 cd $PKGDIR
 ./Configure darwin64-x86_64-cc --prefix=/opt/salt --openssldir=/opt/salt/openssl
 $MAKE
 $MAKE test
-sudo $MAKE install
-
-
-############################################################################
-# Download and install GDBM
-############################################################################
-
-echo -n -e "\033]0;Build_Evn: GDBM\007"
-
-PKGURL="ftp://ftp.gnu.org/gnu/gdbm/gdbm-1.11.tar.gz"
-PKGDIR="gdbm-1.11"
-
-download $PKGURL
-
-echo "################################################################################"
-echo "Building gdbm 1.11"
-echo "################################################################################"
-cd $PKGDIR
-./configure --prefix=/opt/salt --enable-libgdbm-compat
-$MAKE
-$MAKE check
-sudo $MAKE install
-
-
-############################################################################
-# Download and install Gnu Readline
-############################################################################
-
-echo -n -e "\033]0;Build_Evn: Gnu Readline\007"
-
-PKGURL="ftp://ftp.cwru.edu/pub/bash/readline-6.3.tar.gz"
-PKGDIR="readline-6.3"
-
-download $PKGURL
-
-curl -O# ftp://ftp.cwru.edu/pub/bash/readline-6.3.tar.gz
-
-echo "################################################################################"
-echo "Building GNU Readline 6.3"
-echo "################################################################################"
-cd $PKGDIR
-./configure --prefix=/opt/salt
-$MAKE
-sudo $MAKE install
-
+sudo -H $MAKE install
 
 ############################################################################
 # Download and install Python
 ############################################################################
+echo -n -e "\033]0;Build_Env: Python\007"
 
-echo -n -e "\033]0;Build_Evn: Python\007"
-
-PKGURL="https://www.python.org/ftp/python/2.7.11/Python-2.7.11.tar.xz"
-PKGDIR="Python-2.7.11"
+if [ "$PYVER" == "2" ]; then
+    PKGURL="https://www.python.org/ftp/python/2.7.13/Python-2.7.13.tar.xz"
+    PKGDIR="Python-2.7.13"
+else
+    PKGURL="https://www.python.org/ftp/python/3.5.3/Python-3.5.3.tar.xz"
+    PKGDIR="Python-3.5.3"
+fi
 
 download $PKGURL
 
 echo "################################################################################"
-echo "Building Python 2.7.11"
+echo "Building Python"
 echo "################################################################################"
 echo "Note there are some test failures"
 cd $PKGDIR
 ./configure --prefix=/opt/salt --enable-shared --enable-toolbox-glue --with-ensurepip=install
 $MAKE
 # $MAKE test
-sudo $MAKE install
-
-
-############################################################################
-# Download and install CMake
-############################################################################
-
-echo -n -e "\033]0;Build_Evn: CMake\007"
-
-PKGURL="https://cmake.org/files/v3.4/cmake-3.4.1.tar.gz"
-PKGDIR="cmake-3.4.1"
-
-download $PKGURL
-
-echo "################################################################################"
-echo "Building CMake 3.4.1"
-echo "################################################################################"
-cd $PKGDIR
-./bootstrap
-$MAKE
-sudo $MAKE install
-
+sudo -H $MAKE install
 
 ############################################################################
-# Download and install libgit2
+# upgrade pip
 ############################################################################
-
-echo -n -e "\033]0;Build_Evn: libgit2\007"
-
-PKGURL="https://codeload.github.com/libgit2/libgit2/tar.gz/v0.23.4"
-PKGDIR="libgit2-0.23.4"
-
-download $PKGURL
-
-echo "################################################################################"
-echo "Building libgit2 0.23.4"
-echo "################################################################################"
-cd $PKGDIR
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/opt/salt
-sudo cmake --build . --target install
-
+sudo -H $PIP install --upgrade pip
 
 ############################################################################
 # Download and install salt python dependencies
 ############################################################################
-
-echo -n -e "\033]0;Build_Evn: PIP Dependencies\007"
+echo -n -e "\033]0;Build_Env: PIP Dependencies\007"
 
 cd $BUILDDIR
 
 echo "################################################################################"
 echo "Installing Salt Dependencies with pip (normal)"
 echo "################################################################################"
-sudo -H /opt/salt/bin/pip install \
-                          -r $SRCDIR/pkg/osx/req.txt \
-                          --no-cache-dir
+sudo -H $PIP install \
+     -r $SRCDIR/pkg/osx/req.txt \
+     --no-cache-dir
 
 echo "################################################################################"
 echo "Installing Salt Dependencies with pip (build_ext)"
 echo "################################################################################"
-sudo -H /opt/salt/bin/pip install \
-                          -r $SRCDIR/pkg/osx/req_ext.txt \
-                          --global-option=build_ext \
-                          --global-option="-I/opt/salt/include" \
-                          --no-cache-dir
+sudo -H $PIP install \
+     -r $SRCDIR/pkg/osx/req_ext.txt \
+     --global-option=build_ext \
+     --global-option="-I/opt/salt/include" \
+     --no-cache-dir
 
 echo "--------------------------------------------------------------------------------"
 echo "Create Symlink to certifi for openssl"
 echo "--------------------------------------------------------------------------------"
-sudo ln -s /opt/salt/lib/python2.7/site-packages/certifi/cacert.pem /opt/salt/openssl/cert.pem
+sudo ln -s $PYDIR/site-packages/certifi/cacert.pem /opt/salt/openssl/cert.pem
 
-echo -n -e "\033]0;Build_Evn: Finished\007"
+echo -n -e "\033]0;Build_Env: Finished\007"
 
 cd $BUILDDIR
 

@@ -46,7 +46,7 @@ from __future__ import absolute_import
 import sys
 
 # Import salt libs
-import salt.utils
+import salt.utils.data
 
 
 def __virtual__():
@@ -72,6 +72,7 @@ def present(name,
             password_hash=None,
             allow_passwordless=False,
             unix_socket=False,
+            password_column=None,
             **connection_args):
     '''
     Ensure that the named user is present with the specified properties. A
@@ -120,13 +121,13 @@ def present(name,
 
     # check if user exists with the same password (or passwordless login)
     if passwordless:
-        if not salt.utils.is_true(allow_passwordless):
+        if not salt.utils.data.is_true(allow_passwordless):
             ret['comment'] = 'Either password or password_hash must be ' \
                              'specified, unless allow_passwordless is True'
             ret['result'] = False
             return ret
         else:
-            if __salt__['mysql.user_exists'](name, host, passwordless=True, unix_socket=unix_socket,
+            if __salt__['mysql.user_exists'](name, host, passwordless=True, unix_socket=unix_socket, password_column=password_column,
                                              **connection_args):
                 ret['comment'] += ' with passwordless login'
                 return ret
@@ -137,7 +138,7 @@ def present(name,
                     ret['result'] = False
                     return ret
     else:
-        if __salt__['mysql.user_exists'](name, host, password, password_hash, unix_socket=unix_socket,
+        if __salt__['mysql.user_exists'](name, host, password, password_hash, unix_socket=unix_socket, password_column=password_column,
                                          **connection_args):
             ret['comment'] += ' with the desired password'
             if password_hash and not password:
@@ -160,7 +161,7 @@ def present(name,
             ret['result'] = None
             if passwordless:
                 ret['comment'] += 'cleared'
-                if not salt.utils.is_true(allow_passwordless):
+                if not salt.utils.data.is_true(allow_passwordless):
                     ret['comment'] += ', but allow_passwordless != True'
                     ret['result'] = False
             else:
@@ -184,7 +185,7 @@ def present(name,
             err = _get_mysql_error()
             if err is not None:
                 ret['comment'] += ' ({0})'.format(err)
-            if passwordless and not salt.utils.is_true(allow_passwordless):
+            if passwordless and not salt.utils.data.is_true(allow_passwordless):
                 ret['comment'] += '. Note: allow_passwordless must be True ' \
                                   'to permit passwordless login.'
             ret['result'] = False
@@ -203,14 +204,14 @@ def present(name,
             ret['result'] = None
             if passwordless:
                 ret['comment'] += ' with passwordless login'
-                if not salt.utils.is_true(allow_passwordless):
+                if not salt.utils.data.is_true(allow_passwordless):
                     ret['comment'] += ', but allow_passwordless != True'
                     ret['result'] = False
             return ret
 
         if __salt__['mysql.user_create'](name, host,
                                          password, password_hash,
-                                         allow_passwordless, unix_socket=unix_socket,
+                                         allow_passwordless, unix_socket=unix_socket, password_column=password_column,
                                          **connection_args):
             ret['comment'] = \
                 'The user {0}@{1} has been added'.format(name, host)

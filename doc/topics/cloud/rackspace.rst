@@ -3,13 +3,7 @@ Getting Started With Rackspace
 ==============================
 
 Rackspace is a major public cloud platform which may be configured using either
-the `rackspace` or the `openstack` driver, depending on your needs.
-
-Please note that the `rackspace` driver is intended only for 1st gen instances,
-aka, "the old cloud" at Rackspace. It is required for 1st gen instances, but
-will *not* work with OpenStack-based instances. Unless you explicitly have a
-reason to use it, it is highly recommended that you use the `openstack` driver
-instead.
+the `openstack` driver.
 
 
 Dependencies
@@ -49,22 +43,6 @@ To use the `openstack` driver (recommended), set up the cloud configuration at
 
       driver: openstack
 
-
-To use the `rackspace` driver, set up the cloud configuration at
-  ``/etc/salt/cloud.providers`` or
-  ``/etc/salt/cloud.providers.d/rackspace.conf``:
-
-.. code-block:: yaml
-
-    my-rackspace-config:
-      driver: rackspace
-      # The Rackspace login user
-      user: fred
-      # The Rackspace user's apikey
-      apikey: 901d3f579h23c8v73q9
-
-The settings that follow are for using Rackspace with the `openstack` driver,
-and will not work with the `rackspace` driver.
 
 .. note::
     .. versionchanged:: 2015.8.0
@@ -182,7 +160,7 @@ configuration please add:
 Private Subnets
 ---------------
 By default salt-cloud will not add Rackspace private networks to new servers. To enable
-a private network to a server instantiated by salt cloud, add the following section 
+a private network to a server instantiated by salt cloud, add the following section
 to the provider file (typically ``/etc/salt/cloud.providers.d/rackspace.conf``)
 
 .. code-block:: yaml
@@ -198,13 +176,13 @@ to the provider file (typically ``/etc/salt/cloud.providers.d/rackspace.conf``)
 
 To get the Rackspace private network ID, go to Networking, Networks and hover over the private network name.
 
-The order of the networks in the above code block does not map to the order of the 
+The order of the networks in the above code block does not map to the order of the
 ethernet devices on newly created servers.   Public IP will always be first ( eth0 )
 followed by servicenet ( eth1 ) and then private networks.
 
 Enabling the private network per above gives the option of using the private subnet for
-all master-minion communication, including the bootstrap install of salt-minion.  To 
-enable the minion to use the private subnet, update the master: line in the minion: 
-section of the providers file.  To configure the master to only listen on the private 
-subnet IP, update the interface: line in the /etc/salt/master file to be the private 
+all master-minion communication, including the bootstrap install of salt-minion.  To
+enable the minion to use the private subnet, update the master: line in the minion:
+section of the providers file.  To configure the master to only listen on the private
+subnet IP, update the interface: line in the /etc/salt/master file to be the private
 subnet IP of the salt master.

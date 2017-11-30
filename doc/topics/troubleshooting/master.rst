@@ -1,3 +1,5 @@
+.. _troubleshooting-salt-master:
+
 ===============================
 Troubleshooting the Salt Master
 ===============================
@@ -27,8 +29,8 @@ What Ports does the Master Need Open?
 For the master, TCP ports 4505 and 4506 need to be open. If you've put both
 your Salt master and minion in debug mode and don't see an acknowledgment
 that your minion has connected, it could very well be a firewall interfering
-with the connection. See our :doc:`firewall configuration
-</topics/tutorials/firewall>` page for help opening the firewall on various
+with the connection. See our :ref:`firewall configuration
+<firewall>` page for help opening the firewall on various
 platforms.
 
 If you've opened the correct TCP ports and still aren't seeing connections,
@@ -139,7 +141,7 @@ If the master seems to be unresponsive, a SIGUSR1 can be passed to the
 salt-master threads to display what piece of code is executing. This debug
 information can be invaluable in tracking down bugs.
 
-To pass a SIGUSR1 to the master, first make sure the minion is running in the
+To pass a SIGUSR1 to the master, first make sure the master is running in the
 foreground. Stop the service if it is running as a daemon, and start it in the
 foreground like so:
 
@@ -181,8 +183,9 @@ Commands Time Out or Do Not Return Output
 =========================================
 
 Depending on your OS (this is most common on Ubuntu due to apt-get) you may
-sometimes encounter times where your highstate, or other long running commands
-do not return output.
+sometimes encounter times where a :py:func:`state.apply
+<salt.modules.state.apply_>`, or other long running commands do not return
+output.
 
 By default the timeout is set to 5 seconds. The timeout value can easily be
 increased by modifying the ``timeout`` line within your ``/etc/salt/master``
@@ -221,7 +224,7 @@ Salt Master Auth Flooding
 
 In large installations, care must be taken not to overwhealm the master with
 authentication requests. Several options can be set on the master which
-mitigate the chances of an authentication flood from causing an interuption in
+mitigate the chances of an authentication flood from causing an interruption in
 service.
 
 .. note::
@@ -247,9 +250,8 @@ service.
         of the number of attempts.
 
 
-=====================
-Running state locally
-=====================
+Running states locally
+======================
 
 To debug the states, you can use call locally.
 

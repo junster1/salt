@@ -21,7 +21,7 @@ import os.path
 import re
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
 from salt.exceptions import CommandExecutionError
 
 # Function alias to not shadow built-ins.
@@ -30,6 +30,8 @@ __func_alias__ = {
 }
 
 log = logging.getLogger(__name__)
+
+__virtualname__ = 'daemontools'
 
 VALID_SERVICE_DIRS = [
     '/service',
@@ -46,7 +48,9 @@ for service_dir in VALID_SERVICE_DIRS:
 def __virtual__():
     # Ensure that daemontools is installed properly.
     BINS = frozenset(('svc', 'supervise', 'svok'))
-    return all(salt.utils.which(b) for b in BINS)
+    if all(salt.utils.path.which(b) for b in BINS) and SERVICE_DIR:
+        return __virtualname__
+    return False
 
 
 def _service_path(name):

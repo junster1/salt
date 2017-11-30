@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 Manage the password database on Solaris systems
+
+.. important::
+    If you feel that Salt should be using this module to manage passwords on a
+    minion, and it is using a different module (or gives an error similar to
+    *'shadow.info' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 from __future__ import absolute_import
 
@@ -18,7 +24,14 @@ except ImportError:
         pass  # We're most likely on a Windows machine.
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
+from salt.exceptions import CommandExecutionError
+try:
+    import salt.utils.pycrypto
+    HAS_CRYPT = True
+except ImportError:
+    HAS_CRYPT = False
+
 
 # Define the module's virtual name
 __virtualname__ = 'shadow'
@@ -104,7 +117,7 @@ def info(name):
     s_file = '/etc/shadow'
     if not os.path.isfile(s_file):
         return ret
-    with salt.utils.fopen(s_file, 'rb') as ifile:
+    with salt.utils.files.fopen(s_file, 'rb') as ifile:
         for line in ifile:
             comps = line.strip().split(':')
             if comps[0] == name:
@@ -190,6 +203,66 @@ def set_mindays(name, mindays):
     return False
 
 
+def gen_password(password, crypt_salt=None, algorithm='sha512'):
+    '''
+    .. versionadded:: 2015.8.8
+
+    Generate hashed password
+
+    .. note::
+
+        When called this function is called directly via remote-execution,
+        the password argument may be displayed in the system's process list.
+        This may be a security risk on certain systems.
+
+    password
+        Plaintext password to be hashed.
+
+    crypt_salt
+        Crpytographic salt. If not given, a random 8-character salt will be
+        generated.
+
+    algorithm
+        The following hash algorithms are supported:
+
+        * md5
+        * blowfish (not in mainline glibc, only available in distros that add it)
+        * sha256
+        * sha512 (default)
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.gen_password 'I_am_password'
+        salt '*' shadow.gen_password 'I_am_password' crypt_salt='I_am_salt' algorithm=sha256
+    '''
+    if not HAS_CRYPT:
+        raise CommandExecutionError(
+                'gen_password is not available on this operating system '
+                'because the "crypt" python module is not available.'
+                )
+    return salt.utils.pycrypto.gen_hash(crypt_salt, password, algorithm)
+
+
+def del_password(name):
+    '''
+    .. versionadded:: 2015.8.8
+
+    Delete the password from name user
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.del_password username
+    '''
+    cmd = 'passwd -d {0}'.format(name)
+    __salt__['cmd.run'](cmd, python_shell=False, output_loglevel='quiet')
+    uinfo = info(name)
+    return not uinfo['passwd']
+
+
 def set_password(name, password):
     '''
     Set the password for a named user. The password must be a properly defined
@@ -207,7 +280,7 @@ def set_password(name, password):
     if not os.path.isfile(s_file):
         return ret
     lines = []
-    with salt.utils.fopen(s_file, 'rb') as ifile:
+    with salt.utils.files.fopen(s_file, 'rb') as ifile:
         for line in ifile:
             comps = line.strip().split(':')
             if comps[0] != name:
@@ -216,7 +289,7 @@ def set_password(name, password):
             comps[1] = password
             line = ':'.join(comps)
             lines.append('{0}\n'.format(line))
-    with salt.utils.fopen(s_file, 'w+') as ofile:
+    with salt.utils.files.fopen(s_file, 'w+') as ofile:
         ofile.writelines(lines)
     uinfo = info(name)
     return uinfo['passwd'] == password

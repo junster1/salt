@@ -7,7 +7,7 @@ Management zpool
 :depends:       zpool
 :platform:      smartos, illumos, solaris, freebsd, linux
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: yaml
 
@@ -30,6 +30,33 @@ Management zpool
               /dev/disk2
               /dev/disk3
 
+    partitionpool:
+      zpool.present:
+        - config:
+            import: false
+            force: true
+        - properties:
+            comment: disk partition salty storage pool
+            ashift: '12'
+            feature@lz4_compress: enabled
+        - filesystem_properties:
+            compression: lz4
+            atime: on
+            relatime: on
+        - layout:
+            - /dev/disk/by-uuid/3e43ce94-77af-4f52-a91b-6cdbb0b0f41b
+
+    simplepool:
+      zpool.present:
+        - config:
+            import: false
+            force: true
+        - properties:
+            comment: another salty storage pool
+        - layout:
+            - /dev/disk0
+            - /dev/disk1
+
 .. warning::
 
     The layout will never be updated, it will only be used at time of creation.
@@ -42,7 +69,6 @@ from __future__ import absolute_import
 
 # Import Python libs
 import os
-import stat
 import logging
 
 # Import Salt libs
@@ -63,27 +89,10 @@ def __virtual__():
     else:
         return (
             False,
-            '{0} state module can only be loaded on illumos, Solaris, SmartOS, FreeBSD, ...'.format(
+            '{0} state module can only be loaded on illumos, Solaris, SmartOS, FreeBSD, Linux, ...'.format(
                 __virtualname__
             )
         )
-
-
-def _check_device(device, config):
-    '''
-    Check if device is present
-    '''
-    if '/' not in device and config['device_dir'] and os.path.exists(config['device_dir']):
-        device = os.path.join(config['device_dir'], device)
-
-    if not os.path.exists(device):
-        return False, 'not present on filesystem'
-    else:
-        mode = os.stat(device).st_mode
-        if not stat.S_ISBLK(mode) and not stat.S_ISREG(mode) and not stat.S_ISCHR(mode):
-            return False, 'not a block device, a file vdev or character special device'
-
-    return True, ''
 
 
 def present(name, properties=None, filesystem_properties=None, layout=None, config=None):
@@ -145,10 +154,9 @@ def present(name, properties=None, filesystem_properties=None, layout=None, conf
 
             zpool create mypool mirror /tmp/vdisk0 /tmp/vdisk1 /tmp/vdisk2
 
-        Creating a 3-way mirror! Why you probably expect it to be mirror root vdev with 2 devices + a root vdev of 1 device!
+        Creating a 3-way mirror! While you probably expect it to be mirror root vdev with 2 devices + a root vdev of 1 device!
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': None,
@@ -159,39 +167,22 @@ def present(name, properties=None, filesystem_properties=None, layout=None, conf
     config = {
         'import': True,
         'import_dirs': None,
-        'device_dir': None if __grains__['kernel'] != 'SunOS' else '/dev/rdsk',
+        'device_dir': None,
         'force': False
     }
+    if __grains__['kernel'] == 'SunOS':
+        config['device_dir'] = '/dev/rdsk'
+    elif __grains__['kernel'] == 'Linux':
+        config['device_dir'] = '/dev'
     config.update(state_config)
     log.debug('zpool.present::{0}::config - {1}'.format(name, config))
 
-    # validate layout
+    # parse layout
     if layout:
-        layout_valid = True
-        layout_result = {}
         for root_dev in layout:
-            if '-' in root_dev:
-                if root_dev.split('-')[0] not in ['mirror', 'log', 'cache', 'raidz1', 'raidz2', 'raidz3', 'spare']:
-                    layout_valid = False
-                    layout_result[root_dev] = 'not a valid vdev type'
-                layout[root_dev] = layout[root_dev].keys() if isinstance(layout[root_dev], OrderedDict) else layout[root_dev].split(' ')
-
-                for dev in layout[root_dev]:
-                    dev_info = _check_device(dev, config)
-                    if not dev_info[0]:
-                        layout_valid = False
-                        layout_result[root_dev] = {}
-                        layout_result[root_dev][dev] = dev_info[1]
-            else:
-                dev_info = _check_device(root_dev, config)
-                if not dev_info[0]:
-                    layout_valid = False
-                    layout_result[root_dev] = dev_info[1]
-
-        if not layout_valid:
-            ret['result'] = False
-            ret['comment'] = "{0}".format(layout_result)
-            return ret
+            if root_dev.count('-') != 1:
+                continue
+            layout[root_dev] = layout[root_dev].keys() if isinstance(layout[root_dev], OrderedDict) else layout[root_dev].split(' ')
 
         log.debug('zpool.present::{0}::layout - {1}'.format(name, layout))
 
@@ -249,7 +240,7 @@ def present(name, properties=None, filesystem_properties=None, layout=None, conf
                 force=config['force'],
                 dir=config['import_dirs']
             )
-            ret['result'] = name in ret['result'] and ret['result'][name] == 'imported'
+            ret['result'] = ret['result'].get(name) == 'imported'
             if ret['result']:
                 ret['changes'][name] = 'imported'
                 ret['comment'] = 'storage pool {0} was imported'.format(name)
@@ -266,13 +257,14 @@ def present(name, properties=None, filesystem_properties=None, layout=None, conf
                     params = []
                     params.append(name)
                     for root_dev in layout:
-                        if '-' in root_dev:  # special device
-                            params.append(root_dev.split('-')[0])  # add the type by stripping the ID
-                            if root_dev.split('-')[0] in ['mirror', 'log', 'cache', 'raidz1', 'raidz2', 'raidz3', 'spare']:
-                                for sub_dev in layout[root_dev]:  # add all sub devices
-                                    if '/' not in sub_dev and config['device_dir'] and os.path.exists(config['device_dir']):
-                                        sub_dev = os.path.join(config['device_dir'], sub_dev)
-                                    params.append(sub_dev)
+                        if root_dev.count('-') == 1:  # special device
+                            # NOTE: accomidate non existing 'disk' vdev
+                            if root_dev.split('-')[0] != 'disk':
+                                params.append(root_dev.split('-')[0])  # add the type by stripping the ID
+                            for sub_dev in layout[root_dev]:  # add all sub devices
+                                if '/' not in sub_dev and config['device_dir'] and os.path.exists(config['device_dir']):
+                                    sub_dev = os.path.join(config['device_dir'], sub_dev)
+                                params.append(sub_dev)
                         else:  # normal device
                             if '/' not in root_dev and config['device_dir'] and os.path.exists(config['device_dir']):
                                 root_dev = os.path.join(config['device_dir'], root_dev)
@@ -280,11 +272,11 @@ def present(name, properties=None, filesystem_properties=None, layout=None, conf
 
                     # execute zpool.create
                     ret['result'] = __salt__['zpool.create'](*params, force=config['force'], properties=properties, filesystem_properties=filesystem_properties)
-                    if name in ret['result'] and ret['result'][name] == 'created':
+                    if ret['result'].get(name).startswith('created'):
                         ret['result'] = True
                     else:
-                        if name in ret['result']:
-                            ret['comment'] = ret['result'][name]
+                        if ret['result'].get(name):
+                            ret['comment'] = ret['result'].get(name)
                         ret['result'] = False
 
                 if ret['result']:
@@ -306,7 +298,6 @@ def absent(name, export=False, force=False):
         force destroy or export
 
     '''
-    name = name.lower()
     ret = {'name': name,
            'changes': {},
            'result': None,
@@ -325,14 +316,14 @@ def absent(name, export=False, force=False):
                 ret['result'] = True
             else:
                 ret['result'] = __salt__['zpool.export'](name, force=force)
-                ret['result'] = name in ret['result'] and ret['result'][name] == 'exported'
+                ret['result'] = ret['result'].get(name) == 'exported'
 
         else:  # try to destroy the zpool
             if __opts__['test']:
                 ret['result'] = True
             else:
                 ret['result'] = __salt__['zpool.destroy'](name, force=force)
-                ret['result'] = name in ret['result'] and ret['result'][name] == 'destroyed'
+                ret['result'] = ret['result'].get(name) == 'destroyed'
 
         if ret['result']:  # update the changes and comment
             ret['changes'][name] = 'exported' if export else 'destroyed'

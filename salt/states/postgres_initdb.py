@@ -6,7 +6,7 @@ Initialization of PostgreSQL data directory
 The postgres_initdb module is used to initialize the postgresql
 data directory.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: yaml
 
@@ -28,7 +28,9 @@ def __virtual__():
     '''
     Only load if the postgres module is present
     '''
-    return 'postgres.datadir_init' in __salt__
+    if 'postgres.datadir_init' not in __salt__:
+        return (False, 'Unable to load postgres module.  Make sure `postgres.bins_dir` is set.')
+    return True
 
 
 def present(name,

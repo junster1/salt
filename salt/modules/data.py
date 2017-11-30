@@ -11,11 +11,11 @@ import ast
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
 import salt.payload
 
 # Import 3rd-party lib
-import salt.ext.six as six
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +52,8 @@ def load():
 
     try:
         datastore_path = os.path.join(__opts__['cachedir'], 'datastore')
-        fn_ = salt.utils.fopen(datastore_path, 'rb')
-        return serial.load(fn_)
+        with salt.utils.files.fopen(datastore_path, 'rb') as rfh:
+            return serial.loads(rfh.read())
     except (IOError, OSError, NameError):
         return {}
 
@@ -76,7 +76,7 @@ def dump(new_data):
 
     try:
         datastore_path = os.path.join(__opts__['cachedir'], 'datastore')
-        with salt.utils.fopen(datastore_path, 'w+b') as fn_:
+        with salt.utils.files.fopen(datastore_path, 'w+b') as fn_:
             serial = salt.payload.Serial(__opts__)
             serial.dump(new_data, fn_)
 
@@ -100,48 +100,6 @@ def update(key, value):
     store[key] = value
     dump(store)
     return True
-
-
-def getval(key):
-    '''
-    Get a value from the minion datastore
-
-    .. deprecated:: Boron
-         Use ``get`` instead
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' data.getval <key>
-    '''
-    salt.utils.warn_until(
-        'Boron',
-        'Support for \'getval\' has been deprecated and will be removed '
-        'in Salt Boron. Please use \'get\' instead.'
-    )
-    return get(key)
-
-
-def getvals(*keylist):
-    '''
-    Get values from the minion datastore
-
-    .. deprecated:: Boron
-         Use ``get`` instead
-
-    CLI Example:
-
-    .. code-block:: bash
-
-        salt '*' data.getvals <key> [<key> ...]
-    '''
-    salt.utils.warn_until(
-        'Boron',
-        'Support for \'getvals\' has been deprecated and will be removed '
-        'in Salt Boron. Please use \'get\' instead.'
-    )
-    return get(keylist)
 
 
 def cas(key, value, old_value):
@@ -194,7 +152,8 @@ def get(key, default=None):
 
     .. code-block:: bash
 
-        salt '*' data.get <key(s)>
+        salt '*' data.get key
+        salt '*' data.get '["key1", "key2"]'
     '''
     store = load()
 

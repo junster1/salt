@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
-Manage the shadow file
+Manage the shadow file on Linux systems
+
+.. important::
+    If you feel that Salt should be using this module to manage passwords on a
+    minion, and it is using a different module (or gives an error similar to
+    *'shadow.info' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 from __future__ import absolute_import
 
@@ -13,7 +19,9 @@ except ImportError:
     pass
 
 # Import salt libs
-import salt.utils
+import salt.utils.data
+import salt.utils.files
+import salt.utils.stringutils
 from salt.exceptions import CommandExecutionError
 try:
     import salt.utils.pycrypto
@@ -92,6 +100,7 @@ def set_inactdays(name, inactdays):
     post_info = info(name)
     if post_info['inact'] != pre_info['inact']:
         return post_info['inact'] == inactdays
+    return False
 
 
 def set_maxdays(name, maxdays):
@@ -113,6 +122,7 @@ def set_maxdays(name, maxdays):
     post_info = info(name)
     if post_info['max'] != pre_info['max']:
         return post_info['max'] == maxdays
+    return False
 
 
 def set_mindays(name, mindays):
@@ -193,7 +203,59 @@ def del_password(name):
     cmd = 'passwd -d {0}'.format(name)
     __salt__['cmd.run'](cmd, python_shell=False, output_loglevel='quiet')
     uinfo = info(name)
-    return not uinfo['passwd']
+    return not uinfo['passwd'] and uinfo['name'] == name
+
+
+def lock_password(name):
+    '''
+    .. versionadded:: 2016.11.0
+
+    Lock the password from name user
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.lock_password username
+    '''
+    pre_info = info(name)
+    if pre_info['name'] == '':
+        return False
+    if pre_info['passwd'][0] == '!':
+        return True
+
+    cmd = 'passwd -l {0}'.format(name)
+    __salt__['cmd.run'](cmd, python_shell=False)
+
+    post_info = info(name)
+
+    return post_info['passwd'][0] == '!'
+
+
+def unlock_password(name):
+    '''
+    .. versionadded:: 2016.11.0
+
+    Unlock the password from name user
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.unlock_password username
+    '''
+    pre_info = info(name)
+    if pre_info['name'] == '':
+        return False
+    if pre_info['passwd'][0] != '!':
+        return True
+
+    cmd = 'passwd -u {0}'.format(name)
+    __salt__['cmd.run'](cmd, python_shell=False)
+
+    post_info = info(name)
+
+    return post_info['passwd'][0] != '!'
 
 
 def set_password(name, password, use_usermod=False):
@@ -207,7 +269,7 @@ def set_password(name, password, use_usermod=False):
     ``SALTsalt`` is the 8-character crpytographic salt. Valid characters in the
     salt are ``.``, ``/``, and any alphanumeric character.
 
-    Keep in mind that the $6 represents a sha512 hash, if your OS is using a
+    Keep in mind that the $7 represents a sha512 hash, if your OS is using a
     different hashing algorithm this needs to be changed accordingly
 
     CLI Example:
@@ -216,7 +278,7 @@ def set_password(name, password, use_usermod=False):
 
         salt '*' shadow.set_password root '$1$UYCIxa628.9qXjpQCjM4a..'
     '''
-    if not salt.utils.is_true(use_usermod):
+    if not salt.utils.data.is_true(use_usermod):
         # Edit the shadow file directly
         # ALT Linux uses tcb to store password hashes. More information found
         # in manpage (http://docs.altlinux.org/manpages/tcb.5.html)
@@ -228,8 +290,9 @@ def set_password(name, password, use_usermod=False):
         if not os.path.isfile(s_file):
             return ret
         lines = []
-        with salt.utils.fopen(s_file, 'rb') as fp_:
+        with salt.utils.files.fopen(s_file, 'rb') as fp_:
             for line in fp_:
+                line = salt.utils.stringutils.to_str(line)
                 comps = line.strip().split(':')
                 if comps[0] != name:
                     lines.append(line)
@@ -239,13 +302,13 @@ def set_password(name, password, use_usermod=False):
                 comps[2] = str(changed_date.days)
                 line = ':'.join(comps)
                 lines.append('{0}\n'.format(line))
-        with salt.utils.fopen(s_file, 'w+') as fp_:
+        with salt.utils.files.fopen(s_file, 'w+') as fp_:
             fp_.writelines(lines)
         uinfo = info(name)
         return uinfo['passwd'] == password
     else:
         # Use usermod -p (less secure, but more feature-complete)
-        cmd = 'usermod -p {0} {1}'.format(name, password)
+        cmd = 'usermod -p {0} {1}'.format(password, name)
         __salt__['cmd.run'](cmd, python_shell=False, output_loglevel='quiet')
         uinfo = info(name)
         return uinfo['passwd'] == password
@@ -285,7 +348,7 @@ def set_date(name, date):
         salt '*' shadow.set_date username 0
     '''
     cmd = 'chage -d {0} {1}'.format(date, name)
-    __salt__['cmd.run'](cmd, python_shell=False)
+    return not __salt__['cmd.run'](cmd, python_shell=False)
 
 
 def set_expire(name, expire):
@@ -303,4 +366,19 @@ def set_expire(name, expire):
         salt '*' shadow.set_expire username -1
     '''
     cmd = 'chage -E {0} {1}'.format(expire, name)
-    __salt__['cmd.run'](cmd, python_shell=False)
+    return not __salt__['cmd.run'](cmd, python_shell=False)
+
+
+def list_users():
+    '''
+    .. versionadded:: Oxygen
+
+    Return a list of all shadow users
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' shadow.list_users
+    '''
+    return sorted([user.sp_nam for user in spwd.getspall()])

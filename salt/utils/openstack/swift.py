@@ -8,13 +8,13 @@ from __future__ import absolute_import
 
 # Import python libs
 import logging
-from sys import stdout
+import sys
 from os import makedirs
 from os.path import dirname, isdir
 from errno import EEXIST
 
 # Import Salt libs
-import salt.utils
+import salt.utils.files
 
 # Get logging started
 log = logging.getLogger(__name__)
@@ -172,12 +172,12 @@ class SaltSwift(object):
             headers, body = self.conn.get_object(cont, obj, resp_chunk_size=65536)
 
             if return_bin is True:
-                fp = stdout
+                fp = sys.stdout
             else:
                 dirpath = dirname(local_file)
                 if dirpath and not isdir(dirpath):
                     mkdirs(dirpath)
-                fp = salt.utils.fopen(local_file, 'wb')
+                fp = salt.utils.files.fopen(local_file, 'wb')  # pylint: disable=resource-leakage
 
             read_length = 0
             for chunk in body:
@@ -200,7 +200,7 @@ class SaltSwift(object):
         Upload a file to Swift
         '''
         try:
-            with salt.utils.fopen(local_file, 'rb') as fp_:
+            with salt.utils.files.fopen(local_file, 'rb') as fp_:
                 self.conn.put_object(cont, obj, fp_)
             return True
         except Exception as exc:

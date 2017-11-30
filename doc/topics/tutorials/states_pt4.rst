@@ -1,12 +1,14 @@
+.. _tutorial-states-part-4:
+
 =======================
 States tutorial, part 4
 =======================
 
 .. note::
 
-  This tutorial builds on topics covered in :doc:`part 1 <states_pt1>`,
-  :doc:`part 2 <states_pt2>` and :doc:`part 3 <states_pt3>`. It is recommended
-  that you begin there.
+  This tutorial builds on topics covered in :ref:`part 1 <states-tutorial>`,
+  :ref:`part 2 <tutorial-states-part-2>`, and :ref:`part 3 <tutorial-states-part-3>`.
+  It is recommended that you begin there.
 
 This part of the tutorial will show how to use salt's :conf_master:`file_roots`
 to set up a workflow in which states can be "promoted" from dev, to QA, to
@@ -78,6 +80,12 @@ environments, allowing them to be pushed to QA hosts and tested.
 Finally, if moved to the same relative path within ``/srv/salt/prod``, the
 files are now available in all three environments.
 
+Requesting files from specific fileserver environments
+======================================================
+
+See :ref:`here <file-server-environments>` for documentation on how to request
+files from specific environments.
+
 Practical Example
 =================
 
@@ -136,7 +144,7 @@ And finally, the SLS to deploy the website:
 
 ``/srv/salt/prod/webserver/foobarcom.sls:``
 
-.. code-block:: yaml
+.. code-block:: jinja
 
     {% if pillar.get('webserver_role', '') %}
     /var/www/foobarcom:
@@ -153,20 +161,21 @@ Given the above SLS, the source for the website should initially be placed in
 ``/srv/salt/dev/webserver/src/foobarcom``.
 
 First, let's deploy to dev. Given the configuration in the top file, this can
-be done using :mod:`state.highstate <salt.modules.state.highstate>`:
+be done using :py:func:`state.apply <salt.modules.state.apply_>`:
 
 .. code-block:: bash
 
-    salt --pillar 'webserver_role:dev' state.highstate
+    salt --pillar 'webserver_role:dev' state.apply
 
 However, in the event that it is not desirable to apply all states configured
 in the top file (which could be likely in more complex setups), it is possible
-to apply just the states for the ``foobarcom`` website, using :mod:`state.sls
-<salt.modules.state.sls>`:
+to apply just the states for the ``foobarcom`` website, by invoking
+:py:func:`state.apply <salt.modules.state.apply_>` with the desired SLS target
+as an argument:
 
 .. code-block:: bash
 
-    salt --pillar 'webserver_role:dev' state.sls webserver.foobarcom
+    salt --pillar 'webserver_role:dev' state.apply webserver.foobarcom
 
 Once the site has been tested in dev, then the files can be moved from
 ``/srv/salt/dev/webserver/src/foobarcom`` to
@@ -174,7 +183,7 @@ Once the site has been tested in dev, then the files can be moved from
 
 .. code-block:: bash
 
-    salt --pillar 'webserver_role:qa' state.sls webserver.foobarcom
+    salt --pillar 'webserver_role:qa' state.apply webserver.foobarcom
 
 Finally, once the site has been tested in qa, then the files can be moved from
 ``/srv/salt/qa/webserver/src/foobarcom`` to
@@ -182,7 +191,7 @@ Finally, once the site has been tested in qa, then the files can be moved from
 
 .. code-block:: bash
 
-    salt --pillar 'webserver_role:prod' state.sls webserver.foobarcom
+    salt --pillar 'webserver_role:prod' state.apply webserver.foobarcom
 
 Thanks to Salt's fileserver inheritance, even though the files have been moved
 to within ``/srv/salt/prod``, they are still available from the same
@@ -193,7 +202,7 @@ Continue Learning
 =================
 
 The best way to continue learning about Salt States is to read through the
-:doc:`reference documentation </ref/states/index>` and to look through examples
+:ref:`reference documentation <state-system-reference>` and to look through examples
 of existing state trees. Many pre-configured state trees
 can be found on GitHub in the `saltstack-formulas`_ collection of repositories.
 
@@ -203,5 +212,5 @@ If you have any questions, suggestions, or just want to chat with other people
 who are using Salt, we have a very :ref:`active community <salt-community>`
 and we'd love to hear from you.
 
-In addition, by continuing to :doc:`part 5 <states_pt5>`, you can learn about
-the powerful orchestration of which Salt is capable.
+In addition, by continuing to the :ref:`Orchestrate Runner <orchestrate-runner>` docs,
+you can learn about the powerful orchestration of which Salt is capable.

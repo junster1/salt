@@ -9,7 +9,7 @@ import time
 # Import Salt Libs
 import logging
 
-from salt.utils import kinds
+import salt.utils.kinds as kinds
 from salt.transport.client import ReqChannel
 
 log = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ class RAETReqChannel(ReqChannel):
         '''
         return self.send(load, tries, timeout)
 
-    def send(self, load, tries=3, timeout=60):
+    def send(self, load, tries=3, timeout=60, raw=False):
         '''
         Send a message load and wait for a relative reply
         One shot wonder

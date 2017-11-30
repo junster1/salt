@@ -14,11 +14,12 @@ import os
 import yaml
 
 # Import salt libs
-import salt.utils
+import salt.utils.event
+import salt.utils.files
 import salt.utils.odict
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 __proxyenabled__ = ['*']
 
@@ -55,7 +56,8 @@ SCHEDULE_CONF = [
         'until',
         'after',
         'return_config',
-        'return_kwargs'
+        'return_kwargs',
+        'run_on_start'
 ]
 
 
@@ -127,7 +129,7 @@ def list_(show_all=False,
             continue
 
         if '_seconds' in schedule[job]:
-            schedule[job]['seconds'] = schedule[job]['_seconds']
+            # remove _seconds from the listing
             del schedule[job]['_seconds']
 
     if schedule:
@@ -205,7 +207,7 @@ def purge(**kwargs):
                         else:
                             ret['comment'].append('Failed to delete job {0} from schedule.'.format(name))
                             ret['result'] = True
-                        return ret
+
             except KeyError:
                 # Effectively a no-op, since we can't really return without an event system
                 ret['comment'] = 'Event module not available. Schedule add failed.'
@@ -349,15 +351,11 @@ def build_schedule_item(name, **kwargs):
         else:
             schedule[name]['splay'] = kwargs['splay']
 
-    for item in ['range', 'when', 'once', 'once_fmt', 'cron', 'returner',
-                 'return_config', 'return_kwargs', 'until', 'enabled']:
+    for item in ['range', 'when', 'once', 'once_fmt', 'cron',
+                 'returner', 'after', 'return_config', 'return_kwargs',
+                 'until', 'run_on_start']:
         if item in kwargs:
             schedule[name][item] = kwargs[item]
-
-    # if enabled is not included in the job,
-    # assume job is enabled.
-    if 'enabled' not in kwargs:
-        schedule[name]['enabled'] = True
 
     return schedule[name]
 
@@ -773,7 +771,7 @@ def disable(**kwargs):
                     return ret
         except KeyError:
             # Effectively a no-op, since we can't really return without an event system
-            ret['comment'] = 'Event module not available. Schedule enable job failed.'
+            ret['comment'] = 'Event module not available. Schedule disable job failed.'
     return ret
 
 
@@ -803,7 +801,7 @@ def reload_():
     # move this file into an configurable opt
     sfn = '{0}/{1}/schedule.conf'.format(__opts__['config_dir'], os.path.dirname(__opts__['default_include']))
     if os.path.isfile(sfn):
-        with salt.utils.fopen(sfn, 'rb') as fp_:
+        with salt.utils.files.fopen(sfn, 'rb') as fp_:
             try:
                 schedule = yaml.safe_load(fp_.read())
             except yaml.YAMLError as exc:

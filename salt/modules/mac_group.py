@@ -11,8 +11,9 @@ except ImportError:
     pass
 
 # Import Salt Libs
-import salt.utils
+import salt.utils.functools
 import salt.utils.itertools
+import salt.utils.stringutils
 from salt.exceptions import CommandExecutionError, SaltInvocationError
 from salt.modules.mac_user import _dscl, _flush_dscl_cache
 
@@ -25,8 +26,8 @@ def __virtual__():
     if (__grains__.get('kernel') != 'Darwin' or
             __grains__['osrelease_info'] < (10, 7)):
         return (False, 'The mac_group execution module cannot be loaded: only available on Darwin-based systems >= 10.7')
-    _dscl = salt.utils.namespaced_function(_dscl, globals())
-    _flush_dscl_cache = salt.utils.namespaced_function(
+    _dscl = salt.utils.functools.namespaced_function(_dscl, globals())
+    _flush_dscl_cache = salt.utils.functools.namespaced_function(
         _flush_dscl_cache, globals()
     )
     return __virtualname__
@@ -48,7 +49,7 @@ def add(name, gid=None, **kwargs):
         raise CommandExecutionError(
             'Group \'{0}\' already exists'.format(name)
         )
-    if salt.utils.contains_whitespace(name):
+    if salt.utils.stringutils.contains_whitespace(name):
         raise SaltInvocationError('Group name cannot contain whitespace')
     if name.startswith('_'):
         raise SaltInvocationError(
@@ -96,7 +97,7 @@ def delete(name):
 
         salt '*' group.delete foo
     '''
-    if salt.utils.contains_whitespace(name):
+    if salt.utils.stringutils.contains_whitespace(name):
         raise SaltInvocationError('Group name cannot contain whitespace')
     if name.startswith('_'):
         raise SaltInvocationError(
@@ -129,7 +130,7 @@ def deluser(group, name):
     '''
     Remove a user from the group
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI Example:
 
@@ -148,7 +149,7 @@ def members(name, members_list):
     '''
     Replaces members of the group with a provided list.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI Example:
 
@@ -183,7 +184,7 @@ def info(name):
 
         salt '*' group.info foo
     '''
-    if salt.utils.contains_whitespace(name):
+    if salt.utils.stringutils.contains_whitespace(name):
         raise SaltInvocationError('Group name cannot contain whitespace')
     try:
         # getgrnam seems to cache weirdly, so don't use it

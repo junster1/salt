@@ -3,7 +3,7 @@
     salt.serializers.python
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Implements a Python serializer (via pprint.format)
 '''
@@ -16,7 +16,7 @@ except ImportError:
     import json
 
 import pprint
-import salt.utils
+import salt.utils.data
 
 __all__ = ['serialize', 'available']
 
@@ -38,7 +38,7 @@ def serialize(obj, **options):
     return pprint.pformat(
         json.loads(
             json.dumps(obj),
-            object_hook=salt.utils.decode_dict
+            object_hook=salt.utils.data.decode_dict
         ),
         **options
     )

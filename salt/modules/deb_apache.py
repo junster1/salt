@@ -13,7 +13,8 @@ import os
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.decorators.path
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ def __virtual__():
     Only load the module if apache is installed
     '''
     cmd = _detect_os()
-    if salt.utils.which(cmd) and __grains__['os_family'] == 'Debian':
+    if salt.utils.path.which(cmd) and __grains__['os_family'] == 'Debian':
         return __virtualname__
     return (False, 'apache execution module not loaded: apache not installed.')
 
@@ -232,7 +233,7 @@ def a2dismod(mod):
 
 def check_conf_enabled(conf):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Checks to see if the specific conf symlink is in /etc/apache2/conf-enabled.
 
@@ -253,10 +254,10 @@ def check_conf_enabled(conf):
     return os.path.islink('/etc/apache2/conf-enabled/{0}'.format(conf_file))
 
 
-@salt.utils.decorators.which('a2enconf')
+@salt.utils.decorators.path.which('a2enconf')
 def a2enconf(conf):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Runs a2enconf for the given conf.
 
@@ -290,10 +291,10 @@ def a2enconf(conf):
     return ret
 
 
-@salt.utils.decorators.which('a2disconf')
+@salt.utils.decorators.path.which('a2disconf')
 def a2disconf(conf):
     '''
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Runs a2disconf for the given conf.
 

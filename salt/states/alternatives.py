@@ -22,8 +22,8 @@ Control the alternatives system
 
   hadoop-0.20-conf:
     alternatives.remove:
-        - name: hadoop-0.20-conf
-        - path: {{ my_hadoop_conf }}
+      - name: hadoop-0.20-conf
+      - path: {{ my_hadoop_conf }}
 
 '''
 
@@ -31,6 +31,13 @@ Control the alternatives system
 __func_alias__ = {
     'set_': 'set'
 }
+
+
+def __virtual__():
+    '''
+    Only load if alternatives execution module is available.
+    '''
+    return True if 'alternatives.auto' in __salt__ else False
 
 
 def install(name, link, path, priority):
@@ -62,25 +69,34 @@ def install(name, link, path, priority):
            'changes': {},
            'comment': ''}
 
-    isinstalled = __salt__['alternatives.check_exists'](name, path)
-    if not isinstalled:
+    isinstalled = __salt__['alternatives.check_installed'](name, path)
+    if isinstalled:
+        ret['comment'] = 'Alternatives for {0} is already set to {1}'.format(name, path)
+    else:
         if __opts__['test']:
             ret['comment'] = (
                 'Alternative will be set for {0} to {1} with priority {2}'
             ).format(name, path, priority)
             ret['result'] = None
             return ret
-        __salt__['alternatives.install'](name, link, path, priority)
-        ret['comment'] = (
-            'Setting alternative for {0} to {1} with priority {2}'
-        ).format(name, path, priority)
-        ret['changes'] = {'name': name,
-                          'link': link,
-                          'path': path,
-                          'priority': priority}
-        return ret
 
-    ret['comment'] = 'Alternatives for {0} is already set to {1}'.format(name, path)
+        out = __salt__['alternatives.install'](name, link, path, priority)
+        current = __salt__['alternatives.show_current'](name)
+        master_link = __salt__['alternatives.show_link'](name)
+        if current == path and master_link == link:
+            ret['comment'] = (
+                'Alternative for {0} set to path {1} with priority {2}'
+            ).format(name, current, priority)
+            ret['changes'] = {'name': name,
+                              'link': link,
+                              'path': path,
+                              'priority': priority}
+        else:
+            ret['result'] = False
+            ret['comment'] = (
+                'Alternative for {0} not installed: {1}'
+            ).format(name, out)
+
     return ret
 
 
@@ -208,13 +224,12 @@ def set_(name, path):
         if __opts__['test']:
             ret['comment'] = (
                 'Alternative for {0} will be set to path {1}'
-            ).format(name, current)
+            ).format(name, path)
             ret['result'] = None
             return ret
         __salt__['alternatives.set'](name, path)
         current = __salt__['alternatives.show_current'](name)
         if current == path:
-            ret['result'] = True
             ret['comment'] = (
                 'Alternative for {0} set to path {1}'
             ).format(name, current)

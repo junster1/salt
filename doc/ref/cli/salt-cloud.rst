@@ -89,7 +89,7 @@ Execution Options
 
 .. option:: -u, --update-bootstrap
 
-    Update salt-bootstrap to the latest develop version on GitHub.
+    Update salt-bootstrap to the latest stable bootstrap release.
 
 .. option:: -y, --assume-yes
 
@@ -136,7 +136,7 @@ Query Options
     .. versionadded:: 2014.7.0
 
     Display a list of configured profiles. Pass in a cloud provider to view
-    the provider's associated profiles, such as ``digital_ocean``, or pass in
+    the provider's associated profiles, such as ``digitalocean``, or pass in
     ``all`` to list all the configured profiles.
 
 

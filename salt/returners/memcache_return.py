@@ -38,7 +38,7 @@ To use the alternative configuration, append '--return_config alternative' to th
 
 To override individual configuration items, append --return_kwargs '{"key:": "value"}' to the salt command.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 .. code-block:: bash
 
@@ -70,7 +70,8 @@ __virtualname__ = 'memcache'
 
 def __virtual__():
     if not HAS_MEMCACHE:
-        return False
+        return False, 'Could not import memcache returner; ' \
+                      'memcache python client is not installed.'
     return __virtualname__
 
 
@@ -133,7 +134,7 @@ def prep_jid(nocache=False, passed_jid=None):  # pylint: disable=unused-argument
     '''
     Do any work necessary to prepare a JID, including sending a custom id
     '''
-    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid()
+    return passed_jid if passed_jid is not None else salt.utils.jid.gen_jid(__opts__)
 
 
 def returner(ret):
@@ -154,13 +155,20 @@ def returner(ret):
     _append_list(serv, 'jids', jid)
 
 
-def save_load(jid, load):
+def save_load(jid, load, minions=None):
     '''
     Save the load to the specified jid
     '''
     serv = _get_serv(ret=None)
     serv.set(jid, json.dumps(load))
     _append_list(serv, 'jids', jid)
+
+
+def save_minions(jid, minions, syndic_id=None):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
 
 
 def get_load(jid):

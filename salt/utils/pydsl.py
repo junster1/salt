@@ -89,11 +89,10 @@ from uuid import uuid4 as _uuid
 
 # Import salt libs
 from salt.utils.odict import OrderedDict
-from salt.utils import warn_until
 from salt.state import HighState
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 
 REQUISITES = set('listen require watch prereq use listen_in require_in watch_in prereq_in use_in onchanges onfail'.split())
@@ -139,14 +138,9 @@ class Sls(object):
         self.options.update(options)
 
     def include(self, *sls_names, **kws):
-        if kws.get('env', None) is not None:
-            warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt Boron.'
-            )
-            # Backwards compatibility
-            kws['saltenv'] = kws.pop('env')
+        if 'env' in kws:
+            # "env" is not supported; Use "saltenv".
+            kws.pop('env')
 
         saltenv = kws.get('saltenv', self.saltenv)
 

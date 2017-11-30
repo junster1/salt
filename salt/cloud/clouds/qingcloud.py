@@ -40,6 +40,7 @@ from hashlib import sha256
 from salt.ext.six.moves.urllib.parse import quote as _quote  # pylint: disable=import-error,no-name-in-module
 from salt.ext.six.moves import range
 import salt.utils.cloud
+import salt.utils.data
 import salt.config as config
 from salt.exceptions import (
     SaltCloudNotFound,
@@ -187,7 +188,7 @@ def query(params=None):
     log.debug(request.url)
 
     content = request.text
-    result = json.loads(content, object_hook=salt.utils.decode_dict)
+    result = json.loads(content, object_hook=salt.utils.data.decode_dict)
 
     # print('response:')
     # pprint.pprint(result)
@@ -517,7 +518,7 @@ def list_nodes_full(call=None):
         provider = comps[0]
 
     __opts__['update_cachedir'] = True
-    salt.utils.cloud.cache_node_list(result, provider, __opts__)
+    __utils__['cloud.cache_node_list'](result, provider, __opts__)
 
     return result
 
@@ -660,25 +661,18 @@ def create(vm_):
         # Check for required profile parameters before sending any API calls.
         if vm_['profile'] and config.is_profile_configured(__opts__,
                                                            __active_provider_name__ or 'qingcloud',
-                                                           vm_['profile']) is False:
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
 
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in vm_:
-        vm_['driver'] = vm_.pop('provider')
-
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('creating', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -696,11 +690,14 @@ def create(vm_):
         'login_keypair': vm_['login_keypair'],
     }
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        {'kwargs': params},
+        args={
+            'kwargs': __utils__['cloud.filter_event']('requesting', params, list(params)),
+        },
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -734,7 +731,7 @@ def create(vm_):
     vm_['ssh_host'] = private_ip
 
     # The instance is booted and accessible, let's Salt it!
-    salt.utils.cloud.bootstrap(vm_, __opts__)
+    __utils__['cloud.bootstrap'](vm_, __opts__)
 
     log.info('Created Cloud VM \'{0[name]}\''.format(vm_))
 
@@ -744,15 +741,12 @@ def create(vm_):
         )
     )
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('created', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -878,11 +872,12 @@ def destroy(instance_id, call=None):
     instance_data = show_instance(instance_id, call='action')
     name = instance_data['instance_name']
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroying instance',
         'salt/cloud/{0}/destroying'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -893,11 +888,12 @@ def destroy(instance_id, call=None):
     }
     result = query(params)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'destroyed instance',
         'salt/cloud/{0}/destroyed'.format(name),
-        {'name': name},
+        args={'name': name},
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 

@@ -102,10 +102,12 @@ except ImportError:
     pass
 
 # Import 3rd-party libs
-import salt.ext.six as six
+from salt.ext import six
 
 # Import salt libs
-import salt.utils
+import salt.utils.args
+import salt.utils.hashutils
+import salt.utils.stringutils
 import salt.defaults.exitcodes
 from salt.utils.filebuffer import BufferedReader
 
@@ -142,6 +144,8 @@ _INTERVAL_REGEX = re.compile(r'''
                              $
                              ''',
                              flags=re.VERBOSE)
+
+_PATH_DEPTH_IGNORED = (os.path.sep, os.path.curdir, os.path.pardir)
 
 
 def _parse_interval(value):
@@ -358,7 +362,7 @@ class GroupOption(Option):
                 self.gids.add(int(name))
             else:
                 try:
-                    self.gids.add(grp.getgrnam(value).gr_gid)
+                    self.gids.add(grp.getgrnam(name).gr_gid)
                 except KeyError:
                     raise ValueError('no such group "{0}"'.format(name))
 
@@ -488,7 +492,8 @@ class PrintOption(Option):
                     _FILE_TYPES.get(stat.S_IFMT(fstat[stat.ST_MODE]), '?')
                 )
             elif arg == 'mode':
-                result.append(int(oct(fstat[stat.ST_MODE])[-3:]))
+                # PY3 compatibility: Use radix value 8 on int type-cast explicitly
+                result.append(int(oct(fstat[stat.ST_MODE])[-3:], 8))
             elif arg == 'mtime':
                 result.append(fstat[stat.ST_MTIME])
             elif arg == 'user':
@@ -505,7 +510,7 @@ class PrintOption(Option):
                     result.append(gid)
             elif arg == 'md5':
                 if stat.S_ISREG(fstat[stat.ST_MODE]):
-                    md5digest = salt.utils.get_hash(fullpath, 'md5')
+                    md5digest = salt.utils.hashutils.get_hash(fullpath, 'md5')
                     result.append(md5digest)
                 else:
                     result.append('')
@@ -558,8 +563,8 @@ class ExecOption(Option):
     def execute(self, fullpath, fstat, test=False):
         try:
             command = self.command.replace('{}', fullpath)
-            print(salt.utils.shlex_split(command))
-            p = Popen(salt.utils.shlex_split(command),
+            print(salt.utils.args.shlex_split(command))
+            p = Popen(salt.utils.args.shlex_split(command),
                       stdout=PIPE,
                       stderr=PIPE)
             (out, err) = p.communicate()
@@ -567,8 +572,8 @@ class ExecOption(Option):
                 log.error(
                     'Error running command: {0}\n\n{1}'.format(
                     command,
-                    salt.utils.to_str(err)))
-            return "{0}:\n{1}\n".format(command, salt.utils.to_str(out))
+                    salt.utils.stringutils.to_str(err)))
+            return "{0}:\n{1}\n".format(command, salt.utils.stringutils.to_str(out))
 
         except Exception as e:
             log.error(
@@ -630,33 +635,62 @@ class Finder(object):
         This method is a generator and should be repeatedly called
         until there are no more results.
         '''
-        for dirpath, dirs, files in os.walk(path):
-            depth = dirpath[len(path) + len(os.path.sep):].count(os.path.sep)
-            if depth >= self.mindepth:
-                for name in dirs + files:
-                    fstat = None
-                    matches = True
-                    fullpath = None
-                    for criterion in self.criteria:
-                        if fstat is None and criterion.requires() & _REQUIRES_STAT:
-                            fullpath = os.path.join(dirpath, name)
-                            fstat = os.stat(fullpath)
-                        if not criterion.match(dirpath, name, fstat):
-                            matches = False
-                            break
-                    if matches:
-                        if fullpath is None:
-                            fullpath = os.path.join(dirpath, name)
-                        for action in self.actions:
-                            if (fstat is None and
-                                    action.requires() & _REQUIRES_STAT):
-                                fstat = os.stat(fullpath)
-                            result = action.execute(fullpath, fstat, test=self.test)
-                            if result is not None:
-                                yield result
+        if self.mindepth < 1:
+            dirpath, name = os.path.split(path)
+            match, fstat = self._check_criteria(dirpath, name, path)
+            if match:
+                for result in self._perform_actions(path, fstat=fstat):
+                    yield result
 
-            if depth == self.maxdepth:
+        for dirpath, dirs, files in os.walk(path):
+            relpath = os.path.relpath(dirpath, path)
+            depth = path_depth(relpath) + 1
+            if depth >= self.mindepth and (self.maxdepth is None or self.maxdepth >= depth):
+                for name in dirs + files:
+                    fullpath = os.path.join(dirpath, name)
+                    match, fstat = self._check_criteria(dirpath, name, fullpath)
+                    if match:
+                        for result in self._perform_actions(fullpath, fstat=fstat):
+                            yield result
+
+            if self.maxdepth is not None and depth > self.maxdepth:
                 dirs[:] = []
+
+    def _check_criteria(self, dirpath, name, fullpath, fstat=None):
+        match = True
+        for criterion in self.criteria:
+            if fstat is None and criterion.requires() & _REQUIRES_STAT:
+                try:
+                    fstat = os.stat(fullpath)
+                except OSError:
+                    fstat = os.lstat(fullpath)
+            if not criterion.match(dirpath, name, fstat):
+                match = False
+                break
+        return match, fstat
+
+    def _perform_actions(self, fullpath, fstat=None):
+        for action in self.actions:
+            if fstat is None and action.requires() & _REQUIRES_STAT:
+                try:
+                    fstat = os.stat(fullpath)
+                except OSError:
+                    fstat = os.lstat(fullpath)
+            result = action.execute(fullpath, fstat, test=self.test)
+            if result is not None:
+                yield result
+
+
+def path_depth(path):
+    depth = 0
+    head = path
+    while True:
+        head, tail = os.path.split(head)
+        if not tail and (not head or head in _PATH_DEPTH_IGNORED):
+            break
+        if tail and tail not in _PATH_DEPTH_IGNORED:
+            depth += 1
+    return depth
 
 
 def find(path, options):

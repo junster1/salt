@@ -1,14 +1,17 @@
 .. _all-salt.modules:
 
-======================================
-Full list of builtin execution modules
-======================================
+=================
+execution modules
+=================
 
 .. admonition:: Virtual modules
 
     .. toctree::
 
+        salt.modules.group
+        salt.modules.kernelpkg
         salt.modules.pkg
+        salt.modules.user
 
 .. currentmodule:: salt.modules
 
@@ -16,52 +19,71 @@ Full list of builtin execution modules
     :toctree:
     :template: autosummary.rst.tmpl
 
+    acme
+    aix_group
     aliases
     alternatives
     apache
+    apcups
+    apf
+    apk
     aptpkg
     archive
     artifactory
     at
+    at_solaris
     augeas_cfg
     aws_sqs
     bamboohr
     bcache
     beacons
     bigip
-    blockdev
     bluez
+    boto3_elasticache
+    boto3_route53
+    boto_apigateway
     boto_asg
     boto_cfn
+    boto_cloudfront
     boto_cloudtrail
     boto_cloudwatch
+    boto_cloudwatch_event
+    boto_cognitoidentity
     boto_datapipeline
     boto_dynamodb
     boto_ec2
+    boto_efs
     boto_elasticache
+    boto_elasticsearch_domain
     boto_elb
+    boto_elbv2
     boto_iam
     boto_iot
+    boto_kinesis
     boto_kms
-    boto_lamda
+    boto_lambda
     boto_rds
     boto_route53
+    boto_s3_bucket
     boto_secgroup
     boto_sns
     boto_sqs
     boto_vpc
     bower
-    brew
     bridge
     bsd_shadow
     btrfs
     cabal
+    capirca_acl
     cassandra
     cassandra_cql
+    celery
+    ceph
     chassis
     chef
     chocolatey
     chronos
+    cisconso
     cloud
     cmdmod
     composer
@@ -71,12 +93,12 @@ Full list of builtin execution modules
     cp
     cpan
     cron
+    csf
     cyg
     cytest
     daemontools
-    darwin_pkgutil
-    darwin_sysctl
     data
+    datadog_api
     ddns
     deb_apache
     deb_postgres
@@ -92,13 +114,13 @@ Full list of builtin execution modules
     dnsmasq
     dnsutil
     dockercompose
-    dockerio
-    dockerng
+    dockermod
     dpkg
     drac
     dracr
     drbd
-    dsc
+    dummyproxy_package
+    dummyproxy_service
     ebuild
     eix
     elasticsearch
@@ -112,6 +134,7 @@ Full list of builtin execution modules
     file
     firewalld
     freebsd_sysctl
+    freebsd_update
     freebsdjail
     freebsdkmod
     freebsdpkg
@@ -127,6 +150,7 @@ Full list of builtin execution modules
     glusterfs
     gnomedesktop
     gpg
+    grafana4
     grains
     groupadd
     grub_legacy
@@ -134,6 +158,7 @@ Full list of builtin execution modules
     hadoop
     haproxyconn
     hashutil
+    heat
     hg
     hipchat
     hosts
@@ -141,11 +166,21 @@ Full list of builtin execution modules
     http
     ifttt
     ilo
-    img
+    icinga2
     incron
     influx
+    influx08
+    infoblox
     ini_manage
     inspectlib
+    inspectlib.collector
+    inspectlib.dbhandle
+    inspectlib.entities
+    inspectlib.exceptions
+    inspectlib.fsdb
+    inspectlib.kiwiproc
+    inspectlib.query
+    inspector
     introspect
     ipmi
     ipset
@@ -155,15 +190,24 @@ Full list of builtin execution modules
     jboss7_cli
     jenkins
     junos
+    k8s
+    kapacitor
     kerberos
+    kernelpkg_linux_apt
+    kernelpkg_linux_yum
     key
     keyboard
     keystone
     kmod
+    kubernetes
     launchctl
     layman
     ldap3
     ldapmod
+    libcloud_compute
+    libcloud_dns
+    libcloud_loadbalancer
+    libcloud_storage
     linux_acl
     linux_ip
     linux_lvm
@@ -171,18 +215,35 @@ Full list of builtin execution modules
     localemod
     locate
     logadm
+    logmod
     logrotate
     lvs
     lxc
+    mac_assistive
+    mac_brew
+    mac_defaults
+    mac_desktop
     mac_group
+    mac_keychain
+    mac_package
+    mac_pkgutil
+    mac_ports
+    mac_power
+    mac_service
     mac_shadow
     mac_softwareupdate
+    mac_sysctl
+    mac_system
+    mac_timezone
     mac_user
-    macports
+    mac_xattr
     makeconf
+    mandrill
     marathon
     match
+    mattermost
     mdadm
+    mdata
     memcached
     mine
     minion
@@ -193,11 +254,27 @@ Full list of builtin execution modules
     moosefs
     mount
     mssql
+    msteams
     munin
     mysql
     nacl
     nagios
     nagios_rpc
+    namecheap_dns
+    namecheap_domains
+    namecheap_ns
+    namecheap_ssl
+    namecheap_users
+    napalm
+    napalm_acl
+    napalm_bgp
+    napalm_network
+    napalm_ntp
+    napalm_probes
+    napalm_route
+    napalm_snmp
+    napalm_users
+    napalm_yang_mod
     netaddress
     netbsd_sysctl
     netbsdservice
@@ -207,28 +284,36 @@ Full list of builtin execution modules
     nfs3
     nftables
     nginx
-    node
+    nilrt_ip
+    nix
     nova
     npm
     nspawn
+    nxos
     omapi
     openbsd_sysctl
     openbsdpkg
     openbsdrcctl
     openbsdservice
+    openscap
     openstack_config
-    openswitch
+    openstack_mng
+    openvswitch
     opkg
+    opsgenie
     oracle
     osquery
-    osxdesktop
+    out
     pacman
     pagerduty
     pagerduty_util
     pam
+    parallels
     parted
+    pcs
+    pdbedit
     pecl
-    phillips_hue
+    philips_hue
     pillar
     pip
     pkg_resource
@@ -240,9 +325,11 @@ Full list of builtin execution modules
     postgres
     poudriere
     powerpath
+    proxy
     ps
     publish
     puppet
+    purefa
     pushbullet
     pushover_notify
     pw_group
@@ -255,12 +342,13 @@ Full list of builtin execution modules
     raet_publish
     rallydev
     random_org
+    rbac_solaris
     rbenv
     rdp
     redismod
     reg
     rest_package
-    rest_sample
+    rest_sample_utils
     rest_service
     restartcheck
     ret
@@ -282,19 +370,21 @@ Full list of builtin execution modules
     sdb
     seed
     selinux
+    sensehat
     sensors
     serverdensity_device
     service
+    servicenow
     shadow
     slack_notify
     slsutil
     smartos_imgadm
+    smartos_nictagadm
     smartos_virt
     smartos_vmadm
     smbios
     smf
     smtp
-    softwareupdate
     solaris_fmadm
     solaris_group
     solaris_shadow
@@ -303,19 +393,21 @@ Full list of builtin execution modules
     solarisips
     solarispkg
     solr
-    splay
+    solrcloud
     splunk
     splunk_search
     sqlite3
     ssh
     ssh_package
     ssh_service
+    snapper
     state
     status
-    stormpath
-    sudo
+    statuspage
     supervisord
+    suse_apache
     svn
+    swarm
     swift
     sysbench
     sysfs
@@ -325,14 +417,18 @@ Full list of builtin execution modules
     system
     system_profiler
     systemd
+    telegram
     telemetry
     temp
     test
+    testinframod
     test_virtual
+    textfsm_mod
     timezone
     tls
     tomcat
     trafficserver
+    travisci
     tuned
     twilio_notify
     udev
@@ -340,7 +436,9 @@ Full list of builtin execution modules
     uptime
     useradd
     uwsgi
+    vagrant
     varnish
+    vault
     vbox_guest
     vboxmanage
     victorops
@@ -348,23 +446,32 @@ Full list of builtin execution modules
     virtualenv_mod
     vsphere
     win_autoruns
+    win_certutil
     win_dacl
     win_disk
+    win_dism
     win_dns_client
+    win_dsc
     win_file
     win_firewall
     win_groupadd
     win_iis
     win_ip
+    win_lgpo
+    win_license
     win_network
     win_ntp
     win_path
     win_pkg
+    win_pki
     win_powercfg
+    win_psget
     win_repo
     win_servermanager
     win_service
     win_shadow
+    win_smtp_server
+    win_snmp
     win_status
     win_system
     win_task
@@ -374,6 +481,7 @@ Full list of builtin execution modules
     win_wua
     x509
     xapi
+    xbpspkg
     xfs
     xmpp
     yumpkg
@@ -383,5 +491,7 @@ Full list of builtin execution modules
     zfs
     zk_concurrency
     znc
+    zoneadm
+    zonecfg
     zpool
     zypper

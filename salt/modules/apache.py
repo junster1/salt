@@ -16,7 +16,7 @@ import logging
 
 # Import 3rd-party libs
 # pylint: disable=import-error,no-name-in-module
-import salt.ext.six as six
+from salt.ext import six
 from salt.ext.six.moves import cStringIO
 from salt.ext.six.moves.urllib.error import URLError
 from salt.ext.six.moves.urllib.request import (
@@ -29,7 +29,8 @@ from salt.ext.six.moves.urllib.request import (
 # pylint: enable=import-error,no-name-in-module
 
 # Import salt libs
-import salt.utils
+import salt.utils.files
+import salt.utils.path
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def __virtual__():
     Only load the module if apache is installed
     '''
     cmd = _detect_os()
-    if salt.utils.which(cmd):
+    if salt.utils.path.which(cmd):
         return 'apache'
     return (False, 'The apache execution module cannot be loaded: apache is not installed.')
 
@@ -398,23 +399,22 @@ def server_status(profile='default'):
 
 def _parse_config(conf, slot=None):
     ret = cStringIO()
-    if isinstance(conf, str):
+    if isinstance(conf, six.string_types):
         if slot:
             print('{0} {1}'.format(slot, conf), file=ret, end='')
         else:
             print('{0}'.format(conf), file=ret, end='')
     elif isinstance(conf, list):
-        for value in conf:
-            print(_parse_config(value, str(slot)), file=ret)
+        print('{0} {1}'.format(slot, ' '.join(conf)), file=ret, end='')
     elif isinstance(conf, dict):
         print('<{0} {1}>'.format(
             slot,
             _parse_config(conf['this'])),
-            file=ret
-        )
+              file=ret
+             )
         del conf['this']
         for key, value in six.iteritems(conf):
-            if isinstance(value, str):
+            if isinstance(value, six.string_types):
                 print('{0} {1}'.format(key, value), file=ret)
             elif isinstance(value, list):
                 print(_parse_config(value, key), file=ret)
@@ -447,11 +447,15 @@ def config(name, config, edit=True):
         salt '*' apache.config /etc/httpd/conf.d/ports.conf config="[{'Listen': '22'}]"
     '''
 
+    configs = []
     for entry in config:
         key = next(six.iterkeys(entry))
-        configs = _parse_config(entry[key], key)
-        if edit:
-            with salt.utils.fopen(name, 'w') as configfile:
-                configfile.write('# This file is managed by saltstack.\n')
-                configfile.write(configs)
-    return configs
+        configs.append(_parse_config(entry[key], key))
+
+    # Python auto-correct line endings
+    configstext = "\n".join(configs)
+    if edit:
+        with salt.utils.files.fopen(name, 'w') as configfile:
+            configfile.write('# This file is managed by Salt.\n')
+            configfile.write(configstext)
+    return configstext

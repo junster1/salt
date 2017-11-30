@@ -8,12 +8,18 @@ from __future__ import absolute_import
 import base64
 import hashlib
 import hmac
-import StringIO
 
 # Import Salt libs
 import salt.exceptions
-import salt.ext.six as six
-import salt.utils
+from salt.ext import six
+import salt.utils.files
+import salt.utils.hashutils
+import salt.utils.stringutils
+
+if six.PY2:
+    import StringIO
+elif six.PY3:
+    from io import StringIO
 
 
 def digest(instr, checksum='md5'):
@@ -67,7 +73,7 @@ def digest_file(infile, checksum='md5'):
         raise salt.exceptions.CommandExecutionError(
                 "File path '{0}' not found.".format(infile))
 
-    with open(infile, 'rb') as f:
+    with salt.utils.files.fopen(infile, 'rb') as f:
         file_hash = __salt__['hashutil.digest'](f.read(), checksum)
 
     return file_hash
@@ -80,7 +86,7 @@ def base64_b64encode(instr):
     Among other possible differences, the "modern" encoder does not include
     newline ('\\n') characters in the encoded output.
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI Example:
 
@@ -88,18 +94,14 @@ def base64_b64encode(instr):
 
         salt '*' hashutil.base64_b64encode 'get salted'
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        b64 = base64.b64encode(b)
-        return salt.utils.to_str(b64)
-    return base64.b64encode(instr)
+    return salt.utils.hashutils.base64_b64encode(instr)
 
 
 def base64_b64decode(instr):
     '''
     Decode a base64-encoded string using the "modern" Python interface
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     CLI Example:
 
@@ -107,14 +109,7 @@ def base64_b64decode(instr):
 
         salt '*' hashutil.base64_b64decode 'Z2V0IHNhbHRlZA=='
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        data = base64.b64decode(b)
-        try:
-            return salt.utils.to_str(data)
-        except UnicodeDecodeError:
-            return data
-    return base64.b64decode(instr)
+    return salt.utils.hashutils.base64_b64decode(instr)
 
 
 def base64_encodestring(instr):
@@ -133,18 +128,14 @@ def base64_encodestring(instr):
 
         salt '*' hashutil.base64_encodestring 'get salted'
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        b64 = base64.encodebytes(b)
-        return salt.utils.to_str(b64)
-    return base64.encodestring(instr)
+    return salt.utils.hashutils.base64_encodestring(instr)
 
 
 def base64_encodefile(fname):
     '''
     Read a file from the file system and return as a base64 encoded string
 
-    .. versionadded:: Boron
+    .. versionadded:: 2016.3.0
 
     Pillar example:
 
@@ -166,7 +157,7 @@ def base64_encodefile(fname):
     '''
     encoded_f = StringIO.StringIO()
 
-    with open(fname, 'rb') as f:
+    with salt.utils.files.fopen(fname, 'rb') as f:
         base64.encode(f, encoded_f)
 
     encoded_f.seek(0)
@@ -186,21 +177,14 @@ def base64_decodestring(instr):
         salt '*' hashutil.base64_decodestring instr='Z2V0IHNhbHRlZAo='
 
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        data = base64.decodebytes(b)
-        try:
-            return salt.utils.to_str(data)
-        except UnicodeDecodeError:
-            return data
-    return base64.decodestring(instr)
+    return salt.utils.hashutils.base64_decodestring(instr)
 
 
 def base64_decodefile(instr, outfile):
     r'''
     Decode a base64-encoded string and write the result to a file
 
-    .. versionadded:: 2015.2.0
+    .. versionadded:: 2016.3.0
 
     CLI Example:
 
@@ -210,7 +194,7 @@ def base64_decodefile(instr, outfile):
     '''
     encoded_f = StringIO.StringIO(instr)
 
-    with open(outfile, 'wb') as f:
+    with salt.utils.files.fopen(outfile, 'wb') as f:
         base64.decode(encoded_f, f)
 
     return True
@@ -228,10 +212,7 @@ def md5_digest(instr):
 
         salt '*' hashutil.md5_digest 'get salted'
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        return hashlib.md5(b).hexdigest()
-    return hashlib.md5(instr).hexdigest()
+    return salt.utils.hashutils.md5_digest(instr)
 
 
 def sha256_digest(instr):
@@ -246,10 +227,7 @@ def sha256_digest(instr):
 
         salt '*' hashutil.sha256_digest 'get salted'
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        return hashlib.sha256(b).hexdigest()
-    return hashlib.sha256(instr).hexdigest()
+    return salt.utils.hashutils.sha256_digest(instr)
 
 
 def sha512_digest(instr):
@@ -264,10 +242,7 @@ def sha512_digest(instr):
 
         salt '*' hashutil.sha512_digest 'get salted'
     '''
-    if six.PY3:
-        b = salt.utils.to_bytes(instr)
-        return hashlib.sha512(b).hexdigest()
-    return hashlib.sha512(instr).hexdigest()
+    return salt.utils.hashutils.sha512_digest(instr)
 
 
 def hmac_signature(string, shared_secret, challenge_hmac):
@@ -284,14 +259,29 @@ def hmac_signature(string, shared_secret, challenge_hmac):
 
         salt '*' hashutil.hmac_signature 'get salted' 'shared secret' 'eBWf9bstXg+NiP5AOwppB5HMvZiYMPzEM9W5YMm/AmQ='
     '''
+    return salt.utils.hashutils.hmac_signature(string, shared_secret, challenge_hmac)
+
+
+def github_signature(string, shared_secret, challenge_hmac):
+    '''
+    Verify a challenging hmac signature against a string / shared-secret for
+    github webhooks.
+
+    .. versionadded:: 2017.7.0
+
+    Returns a boolean if the verification succeeded or failed.
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        salt '*' hashutil.github_signature '{"ref":....} ' 'shared secret' 'sha1=bc6550fc290acf5b42283fa8deaf55cea0f8c206'
+    '''
+    msg = string
+    key = shared_secret
+    hashtype, challenge = challenge_hmac.split('=')
     if six.PY3:
-        msg = salt.utils.to_bytes(string)
-        key = salt.utils.to_bytes(shared_secret)
-        challenge = salt.utils.to_bytes(challenge_hmac)
-    else:
-        msg = string
-        key = shared_secret
-        challenge = challenge_hmac
-    hmac_hash = hmac.new(key, msg, hashlib.sha256)
-    valid_hmac = base64.b64encode(hmac_hash.digest())
-    return valid_hmac == challenge
+        msg = salt.utils.stringutils.to_bytes(msg)
+        key = salt.utils.stringutils.to_bytes(key)
+    hmac_hash = hmac.new(key, msg, getattr(hashlib, hashtype))
+    return hmac_hash.hexdigest() == challenge

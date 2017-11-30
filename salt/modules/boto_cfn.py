@@ -5,7 +5,7 @@ Connection module for Amazon Cloud Formation
 .. versionadded:: 2015.5.0
 
 :configuration: This module accepts explicit AWS credentials but can also utilize
-    IAM roles assigned to the instance trough Instance Profiles. Dynamic
+    IAM roles assigned to the instance through Instance Profiles. Dynamic
     credentials are then automatically obtained from AWS API and no further
     configuration is necessary. More Information available at:
 
@@ -64,7 +64,7 @@ def __virtual__():
 
 def __init__(opts):
     if HAS_BOTO:
-        __utils__['boto.assign_funcs'](__name__, 'cfn', module='cloudformation')
+        __utils__['boto.assign_funcs'](__name__, 'cfn', module='cloudformation', pack=__salt__)
 
 
 def exists(name, region=None, key=None, keyid=None, profile=None):
@@ -105,14 +105,19 @@ def describe(name, region=None, key=None, keyid=None, profile=None):
         if r:
             stack = r[0]
             log.debug('Found VPC: {0}'.format(stack.stack_id))
-            keys = ('stack_id', 'description', 'stack_status', 'stack_status_reason')
+            keys = ('stack_id', 'description', 'stack_status', 'stack_status_reason', 'tags')
 
             ret = dict([(k, getattr(stack, k)) for k in keys if hasattr(stack, k)])
             o = getattr(stack, 'outputs')
+            p = getattr(stack, 'parameters')
             outputs = {}
+            parameters = {}
             for i in o:
                 outputs[i.key] = i.value
             ret['outputs'] = outputs
+            for j in p:
+                parameters[j.key] = j.value
+            ret['parameters'] = parameters
 
             return {'stack': ret}
 

@@ -3,6 +3,9 @@
 Management of the windows update agent
 ======================================
 
+This module is being deprecated and will be removed in Salt Fluorine. Please use
+the ``win_wua`` state module instead.
+
 .. versionadded:: 2014.7.0
 
 Set windows updates to run by category. Default behavior is to install
@@ -21,9 +24,13 @@ and download but not install standard updates.
         - categories:
           - 'Critical Updates'
           - 'Security Updates'
+        - skips:
+          - downloaded
       win_update.downloaded:
         - categories:
           - 'Updates'
+        - skips:
+          - downloaded
 
 You can also specify a number of features about the update to have a
 fine grain approach to specific types of updates. These are the following
@@ -32,21 +39,20 @@ features/states of updates available for configuring:
 .. code-block:: text
 
     'UI' - User interaction required, skipped by default
-    'downloaded' - Already downloaded, skipped by default (downloading)
-    'present' - Present on computer, included by default (installing)
+    'downloaded' - Already downloaded, included by default
+    'present' - Present on computer, skipped by default
     'installed' - Already installed, skipped by default
     'reboot' - Reboot required, included by default
-    'hidden' - skip those updates that have been hidden.
+    'hidden' - Skip updates that have been hidden, skipped by default
     'software' - Software updates, included by default
-    'driver' - driver updates, skipped by default
+    'driver' - driver updates, included by default
 
 The following example installs all driver updates that don't require a reboot:
-
 .. code-block:: yaml
 
     gryffindor:
       win_update.installed:
-        - includes:
+        - skips:
           - driver: True
           - software: False
           - reboot: False
@@ -64,8 +70,8 @@ from __future__ import absolute_import
 import logging
 
 # Import 3rd-party libs
-import salt.ext.six as six
 # pylint: disable=import-error
+from salt.ext import six
 from salt.ext.six.moves import range  # pylint: disable=redefined-builtin
 try:
     import win32com.client
@@ -75,8 +81,9 @@ except ImportError:
     HAS_DEPENDENCIES = False
 # pylint: enable=import-error
 
-# Import salt libs
-import salt.utils
+# Import Salt libs
+import salt.utils.platform
+import salt.utils.versions
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +92,7 @@ def __virtual__():
     '''
     Only works on Windows systems
     '''
-    if salt.utils.is_windows() and HAS_DEPENDENCIES:
+    if salt.utils.platform.is_windows() and HAS_DEPENDENCIES:
         return True
     return False
 
@@ -113,9 +120,9 @@ def _gather_update_categories(updateCollection):
 
 
 class PyWinUpdater(object):
-    def __init__(self, categories=None, skipUI=True, skipDownloaded=True,
-            skipInstalled=True, skipReboot=False, skipPresent=True,
-            softwareUpdates=True, driverUpdates=False, skipHidden=True):
+    def __init__(self, categories=None, skipUI=True, skipDownloaded=False,
+            skipInstalled=True, skipReboot=False, skipPresent=False,
+            skipSoftwareUpdates=False, skipDriverUpdates=False, skipHidden=True):
         log.debug('CoInitializing the pycom system')
         pythoncom.CoInitialize()
 
@@ -127,8 +134,8 @@ class PyWinUpdater(object):
         self.skipPresent = skipPresent
         self.skipHidden = skipHidden
 
-        self.softwareUpdates = softwareUpdates
-        self.driverUpdates = driverUpdates
+        self.skipSoftwareUpdates = skipSoftwareUpdates
+        self.skipDriverUpdates = skipDriverUpdates
         self.categories = categories
         self.foundCategories = None
         # pylint: enable=invalid-name
@@ -173,14 +180,14 @@ class PyWinUpdater(object):
         try:
             for update in self.search_results.Updates:
                 if update.InstallationBehavior.CanRequestUserInput:
-                    log.debug('Skipped update {0}'.format(update))
+                    log.debug(u'Skipped update {0}'.format(update.title))
                     continue
                 for category in update.Categories:
                     if self.skipDownloaded and update.IsDownloaded:
                         continue
                     if self.categories is None or category.Name in self.categories:
                         self.download_collection.Add(update)
-                        log.debug('added update {0}'.format(update))
+                        log.debug(u'added update {0}'.format(update.title))
             self.foundCategories = _gather_update_categories(self.download_collection)
             return True
         except Exception as exc:
@@ -201,9 +208,9 @@ class PyWinUpdater(object):
             searchParams.append('IsHidden=1')
 
         if self.skipReboot:
-            searchParams.append('RebootRequired=1')
-        else:
             searchParams.append('RebootRequired=0')
+        else:
+            searchParams.append('RebootRequired=1')
 
         if self.skipPresent:
             searchParams.append('IsPresent=0')
@@ -216,11 +223,11 @@ class PyWinUpdater(object):
         else:
             search_string += '{0} and '.format(searchParams[1])
 
-        if self.softwareUpdates and self.driverUpdates:
+        if not self.skipSoftwareUpdates and not self.skipDriverUpdates:
             search_string += 'Type=\'Software\' or Type=\'Driver\''
-        elif self.softwareUpdates:
+        elif not self.skipSoftwareUpdates:
             search_string += 'Type=\'Software\''
-        elif self.driverUpdates:
+        elif not self.skipDriverUpdates:
             search_string += 'Type=\'Driver\''
         else:
             return False
@@ -247,6 +254,16 @@ class PyWinUpdater(object):
             log.debug('Updates prepared. beginning installation')
         except Exception as exc:
             log.info('Preparing install list failed: {0}'.format(exc))
+            return exc
+
+        # accept eula if not accepted
+        try:
+            for update in self.search_results.Updates:
+                if not update.EulaAccepted:
+                    log.debug(u'Accepting EULA: {0}'.format(update.Title))
+                    update.AcceptEula()
+        except Exception as exc:
+            log.info('Accepting Eula failed: {0}'.format(exc))
             return exc
 
         if self.install_collection.Count != 0:
@@ -301,32 +318,34 @@ class PyWinUpdater(object):
     def GetAvailableCategories(self):
         return self.foundCategories
 
-    def SetIncludes(self, includes):
-        if includes:
-            for i in includes:
+    def SetSkips(self, skips):
+        if skips:
+            for i in skips:
                 value = i[next(six.iterkeys(i))]
-                include = next(six.iterkeys(i))
-                self.SetInclude(include, value)
-                log.debug('was asked to set {0} to {1}'.format(include, value))
+                skip = next(six.iterkeys(i))
+                self.SetSkip(skip, value)
+                log.debug('was asked to set {0} to {1}'.format(skip, value))
 
-    def SetInclude(self, include, state):
-        if include == 'UI':
+    def SetSkip(self, skip, state):
+        if skip == 'UI':
             self.skipUI = state
-        elif include == 'downloaded':
+        elif skip == 'downloaded':
             self.skipDownloaded = state
-        elif include == 'installed':
+        elif skip == 'installed':
             self.skipInstalled = state
-        elif include == 'reboot':
+        elif skip == 'reboot':
             self.skipReboot = state
-        elif include == 'present':
+        elif skip == 'present':
             self.skipPresent = state
-        elif include == 'software':
-            self.softwareUpdates = state
-        elif include == 'driver':
-            self.driverUpdates = state
-        log.debug('new search state: \n\tUI: {0}\n\tDownload: {1}\n\tInstalled: {2}\n\treboot :{3}\n\tPresent: {4}\n\tsoftware: {5}\n\tdriver: {6}'.format(
+        elif skip == 'hidden':
+            self.skipHidden = state
+        elif skip == 'software':
+            self.skipSoftwareUpdates = state
+        elif skip == 'driver':
+            self.skipDriverUpdates = state
+        log.debug('new search state: \n\tUI: {0}\n\tDownload: {1}\n\tInstalled: {2}\n\treboot :{3}\n\tPresent: {4}\n\thidden: {5}\n\tsoftware: {6}\n\tdriver: {7}'.format(
             self.skipUI, self.skipDownloaded, self.skipInstalled, self.skipReboot,
-            self.skipPresent, self.softwareUpdates, self.driverUpdates))
+            self.skipPresent, self.skipHidden, self.skipSoftwareUpdates, self.skipDriverUpdates))
 
 
 def _search(win_updater, retries=5):
@@ -400,7 +419,7 @@ def _install(win_updater, retries=5):
     return (comment, True, retries)
 
 
-def installed(name, categories=None, includes=None, retries=10):
+def installed(name, categories=None, skips=None, retries=10):
     '''
     Install specified windows updates.
 
@@ -421,7 +440,7 @@ def installed(name, categories=None, includes=None, retries=10):
             Security Updates
             Update Rollups
 
-    includes:
+    skips:
         a list of features of the updates to cull by. Available features:
 
         .. code-block:: text
@@ -439,16 +458,22 @@ def installed(name, categories=None, includes=None, retries=10):
         Number of retries to make before giving up. This is total, not per
         step.
     '''
+
     ret = {'name': name,
            'result': True,
            'changes': {},
            'comment': ''}
+    deprecation_msg = 'The \'win_update\' module is deprecated, and will be ' \
+                      'removed in Salt Fluorine. Please use the \'win_wua\' ' \
+                      'module instead.'
+    salt.utils.versions.warn_until('Fluorine', deprecation_msg)
+    ret.setdefault('warnings', []).append(deprecation_msg)
     if not categories:
         categories = [name]
     log.debug('categories to search for are: {0}'.format(categories))
     win_updater = PyWinUpdater()
     win_updater.SetCategories(categories)
-    win_updater.SetIncludes(includes)
+    win_updater.SetSkips(skips)
 
     # this is where we be seeking the things! yar!
     comment, passed, retries = _search(win_updater, retries)
@@ -478,7 +503,7 @@ def installed(name, categories=None, includes=None, retries=10):
     return ret
 
 
-def downloaded(name, categories=None, includes=None, retries=10):
+def downloaded(name, categories=None, skips=None, retries=10):
     '''
     Cache updates for later install.
 
@@ -499,7 +524,7 @@ def downloaded(name, categories=None, includes=None, retries=10):
             Security Updates
             Update Rollups
 
-    includes:
+    skips:
         a list of features of the updates to cull by. Available features:
 
         .. code-block:: text
@@ -521,12 +546,19 @@ def downloaded(name, categories=None, includes=None, retries=10):
            'result': True,
            'changes': {},
            'comment': ''}
+
+    deprecation_msg = 'The \'win_update\' module is deprecated, and will be ' \
+                      'removed in Salt Fluorine. Please use the \'win_wua\' ' \
+                      'module instead.'
+    salt.utils.versions.warn_until('Fluorine', deprecation_msg)
+    ret.setdefault('warnings', []).append(deprecation_msg)
+
     if not categories:
         categories = [name]
     log.debug('categories to search for are: {0}'.format(categories))
     win_updater = PyWinUpdater()
     win_updater.SetCategories(categories)
-    win_updater.SetIncludes(includes)
+    win_updater.SetSkips(skips)
 
     # this is where we be seeking the things! yar!
     comment, passed, retries = _search(win_updater, retries)

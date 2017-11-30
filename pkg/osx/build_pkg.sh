@@ -1,11 +1,11 @@
 #!/bin/bash
 ############################################################################
 #
-# Title: Build Package Script for OSX
+# Title: Build Package Script for macOS
 # Authors: CR Oldham, Shane Lee
 # Date: December 2015
 #
-# Description: This creates an OSX package for Salt from the contents of
+# Description: This creates an macOS package for Salt from the contents of
 #              /opt/salt
 #
 # Requirements:
@@ -13,18 +13,24 @@
 #
 # Usage:
 #     This script can be passed 2 parameters
-#         $1 : <package dir> : the staging area for the package defaults to
-#              /tmp/salt-pkg
-#         $2 : <version> : the version name to give the package (overrides
+#         $1 : <version> : the version name to give the package (overrides
 #              version of the git repo) (Defaults to the git repo version)
+#         $2 : <python ver> : the version of python that was built (defaults
+#              to 2)
+#         $3 : <package dir> : the staging area for the package defaults to
+#              /tmp/salt_pkg
 #
 #     Example:
-#         The following will build Salt and stage all files in /tmp/pkg:
+#         The following will build Salt version 2017.7.0 with Python 3 and
+#         stage all files in /tmp/salt_pkg:
 #
-#         ./build.sh /tmp/pkg
+#         ./build.sh 2017.7.0 3
 #
 ############################################################################
 
+############################################################################
+# Set to Exit on all Errors
+############################################################################
 trap 'quit_on_error $LINENO $BASH_COMMAND' ERR
 
 quit_on_error() {
@@ -35,86 +41,67 @@ quit_on_error() {
 ############################################################################
 # Check passed parameters, set defaults
 ############################################################################
+# Get/Set Version
 if [ "$1" == "" ]; then
-    PKGDIR=/tmp/pkg
-else
-    PKGDIR=$1
-fi
-
-if [ "$2" == "" ]; then
     VERSION=`git describe`
 else
-    VERSION=$2
+    VERSION=$1
 fi
+
+# Get/Set Python Version
+if [ "$2" == "" ]; then
+    PYVER=2
+else
+    PYVER=$2
+fi
+
+# Get/Set temp directory
+if [ "$3" == "" ]; then
+    PKGDIR=/tmp/salt_pkg
+else
+    PKGDIR=$3
+fi
+
+CPUARCH=`uname -m`
 
 ############################################################################
 # Additional Parameters Required for the script to function properly
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Variables\007"
 
 SRCDIR=`git rev-parse --show-toplevel`
+PKGRESOURCES=$SRCDIR/pkg/osx
 
 ############################################################################
 # Make sure this is the Salt Repository
 ############################################################################
 if [[ ! -e "$SRCDIR/.git" ]] && [[ ! -e "$SRCDIR/scripts/salt" ]]; then
     echo "This directory doesn't appear to be a git repository."
-    echo "The OS X build process needs some files from a Git checkout of Salt."
-    echo "Run this script from the root of the Git checkout."
+    echo "The macOS build process needs some files from a Git checkout of Salt."
+    echo "Run this script from the 'pkg/osx' directory of the Git checkout."
     exit -1
 fi
 
 ############################################################################
 # Ensure Paths are present and clean
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Clean Staging Area\007"
 
 # Clean folder in the staging area
-rm -rf $PKGDIR
+rm -rdf $PKGDIR
 mkdir -p $PKGDIR
-
-PKGRESOURCES=$SRCDIR/pkg/osx
-
-############################################################################
-# Create Symbolic Links to Salt Binaries
-############################################################################
-
-echo -n -e "\033]0;Build_Pkg: Create Symbolic Links\007"
-
-cd /opt/salt
-for f in /opt/salt/bin/salt-*; do
-    if [ ! -f $f ]; then
-        ln -s $f /opt/salt
-    fi
-done
-
-if [ ! -f /opt/salt/bin/spm ];  then
-    ln -s /opt/salt/bin/spm /opt/salt
-fi
-if [ ! -f /opt/salt/bin/raetflo ];  then
-    ln -s /opt/salt/bin/raetflo /opt/salt
-fi
-if [ ! -f /opt/salt/bin/ioflo ];  then
-    ln -s /opt/salt/bin/ioflo /opt/salt
-fi
-if [ ! -f /opt/salt/bin/ioflo2 ];  then
-    ln -s /opt/salt/bin/ioflo2 /opt/salt
-fi
 
 ############################################################################
 # Copy Start Scripts from Salt Repo to /opt/salt
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Copy Start Scripts\007"
 
 sudo cp $PKGRESOURCES/scripts/start-*.sh /opt/salt/bin/
+sudo cp $PKGRESOURCES/scripts/salt-config.sh /opt/salt/bin
 
 ############################################################################
 # Copy Service Definitions from Salt Repo to the Package Directory
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Copy Service Definitions\007"
 
 mkdir -p $PKGDIR/opt
@@ -127,24 +114,28 @@ cp $PKGRESOURCES/scripts/com.saltstack.salt.syndic.plist $PKGDIR/Library/LaunchD
 cp $PKGRESOURCES/scripts/com.saltstack.salt.api.plist $PKGDIR/Library/LaunchDaemons
 
 ############################################################################
-# Copy Additional Resources from Salt Repo to the Package Directory
+# Remove unnecessary files from the package
 ############################################################################
+echo -n -e "\033]0;Build_Pkg: Trim unneeded files\007"
 
-echo -n -e "\033]0;Build_Pkg: Copy Additional Resources\007"
+sudo rm -rdf $PKGDIR/opt/salt/bin/pkg-config
+sudo rm -rdf $PKGDIR/opt/salt/lib/pkgconfig
+sudo rm -rdf $PKGDIR/opt/salt/lib/engines
+sudo rm -rdf $PKGDIR/opt/salt/share/aclocal
+sudo rm -rdf $PKGDIR/opt/salt/share/doc
+sudo rm -rdf $PKGDIR/opt/salt/share/man/man1/pkg-config.1
+if [ "$PYVER" == "2" ]; then
+    sudo rm -rdf $PKGDIR/opt/salt/lib/python2.7/test
+else
+    sudo rm -rdf $PKGDIR/opt/salt/lib/python3.5/test
+fi
 
-mkdir -p $PKGDIR/resources
-cp $PKGRESOURCES/saltstack.png $PKGDIR/resources
-cp $PKGRESOURCES/*.rtf $PKGDIR/resources
-
-# I can't get this to work for some reason
-mkdir -p $PKGDIR/scripts
-cp $PKGRESOURCES/scripts/postflight.sh $PKGDIR/scripts
-cp $PKGRESOURCES/scripts/preflight.sh $PKGDIR/scripts
+echo -n -e "\033]0;Build_Pkg: Remove compiled python files\007"
+sudo find $PKGDIR/opt/salt -name '*.pyc' -type f -delete
 
 ############################################################################
 # Copy Config Files from Salt Repo to the Package Directory
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Copy Config Files\007"
 
 mkdir -p $PKGDIR/etc/salt
@@ -152,31 +143,48 @@ cp $SRCDIR/conf/minion $PKGDIR/etc/salt/minion.dist
 cp $SRCDIR/conf/master $PKGDIR/etc/salt/master.dist
 
 ############################################################################
-# I don't know what this does, it doesn't look like the .xml file goes anywhere
+# Add Version and CPU Arch to distribution.xml
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Add Version to .xml\007"
+
+if [ "$PYVER" == "2" ]; then
+    TITLE="Salt $VERSION"
+    DESC="Salt $VERSION with Python 2"
+else
+    TITLE="Salt $VERSION (Python 3)"
+    DESC="Salt $VERSION with Python 3"
+fi
 
 cd $PKGRESOURCES
 cp distribution.xml.dist distribution.xml
-SEDSTR="s/@VERSION@/$VERSION/"
-echo $SEDSTR
-sed -i '' $SEDSTR distribution.xml
+SEDSTR="s/@TITLE@/$TITLE/g"
+sed -E -i '' "$SEDSTR" distribution.xml
+
+SEDSTR="s/@DESC@/$DESC/g"
+sed -E -i '' "$SEDSTR" distribution.xml
+
+SEDSTR="s/@VERSION@/$VERSION/g"
+sed -E -i '' "$SEDSTR" distribution.xml
+
+SEDSTR="s/@PYVER@/$PYVER/g"
+sed -E -i '' "$SEDSTR" distribution.xml
+
+SEDSTR="s/@CPUARCH@/$CPUARCH/g"
+sed -i '' "$SEDSTR" distribution.xml
 
 ############################################################################
 # Build the Package
 ############################################################################
-
 echo -n -e "\033]0;Build_Pkg: Build Package\007"
 
-pkgbuild --root $PKGDIR \
+pkgbuild --root=$PKGDIR \
+         --scripts=pkg-scripts \
          --identifier=com.saltstack.salt \
          --version=$VERSION \
-         --ownership=recommended salt-src-$VERSION.pkg
+         --ownership=recommended salt-src-$VERSION-py$PYVER-$CPUARCH.pkg
 
-productbuild --resources=$PKGDIR/resources \
+productbuild --resources=pkg-resources \
              --distribution=distribution.xml  \
-             --package-path=salt-src-$VERSION.pkg \
-             --scripts $PKGDIR/scripts \
-             --version=$VERSION salt-$VERSION.pkg
+             --package-path=salt-src-$VERSION-py$PYVER-$CPUARCH.pkg \
+             --version=$VERSION salt-$VERSION-py$PYVER-$CPUARCH.pkg
 

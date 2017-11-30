@@ -6,18 +6,22 @@ from __future__ import absolute_import
 
 # Import python libs
 import copy
-import errno
 import logging
 import os
 import re
-from distutils.version import LooseVersion as _LooseVersion
+import stat
 
 # Import salt libs
-import salt.utils
+import salt.utils.args
 import salt.utils.files
+import salt.utils.functools
 import salt.utils.itertools
+import salt.utils.path
+import salt.utils.platform
+import salt.utils.templates
 import salt.utils.url
 from salt.exceptions import SaltInvocationError, CommandExecutionError
+from salt.utils.versions import LooseVersion as _LooseVersion
 from salt.ext import six
 
 log = logging.getLogger(__name__)
@@ -31,7 +35,7 @@ def __virtual__():
     '''
     Only load if git exists on the system
     '''
-    if salt.utils.which('git') is None:
+    if salt.utils.path.which('git') is None:
         return (False,
                 'The git execution module cannot be loaded: git unavailable.')
     else:
@@ -58,16 +62,17 @@ def _config_getter(get_opt,
                    value_regex=None,
                    cwd=None,
                    user=None,
+                   password=None,
                    ignore_retcode=False,
                    **kwargs):
     '''
     Common code for config.get_* functions, builds and runs the git CLI command
     and returns the result dict for the calling function to parse.
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     global_ = kwargs.pop('global', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     if cwd is None:
         if not global_:
@@ -86,14 +91,15 @@ def _config_getter(get_opt,
         value_regex = None
 
     command = ['git', 'config']
-    command.extend(_which_git_config(global_, cwd, user))
+    command.extend(_which_git_config(global_, cwd, user, password))
     command.append(get_opt)
     command.append(key)
     if value_regex is not None:
         command.append(value_regex)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode,
                     failhard=False)
 
@@ -114,6 +120,22 @@ def _expand_path(cwd, user):
         return os.path.join(os.path.expanduser(to_expand), str(cwd))
 
 
+def _path_is_executable_others(path):
+    '''
+    Check every part of path for executable permission
+    '''
+    prevpath = None
+    while path and path != prevpath:
+        try:
+            if not os.stat(path).st_mode & stat.S_IXOTH:
+                return False
+        except OSError:
+            return False
+        prevpath = path
+        path, _ = os.path.split(path)
+    return True
+
+
 def _format_opts(opts):
     '''
     Common code to inspect opts and split them if necessary
@@ -132,7 +154,7 @@ def _format_opts(opts):
         if not isinstance(opts, six.string_types):
             opts = [str(opts)]
         else:
-            opts = salt.utils.shlex_split(opts)
+            opts = salt.utils.args.shlex_split(opts)
     try:
         if opts[-1] == '--':
             # Strip the '--' if it was passed at the end of the opts string,
@@ -145,9 +167,24 @@ def _format_opts(opts):
     return opts
 
 
-def _git_run(command, cwd=None, runas=None, identity=None,
+def _format_git_opts(opts):
+    '''
+    Do a version check and make sure that the installed version of git can
+    support git -c
+    '''
+    if opts:
+        version_ = version(versioninfo=False)
+        if _LooseVersion(version_) < _LooseVersion('1.7.2'):
+            raise SaltInvocationError(
+                'git_opts is only supported for git versions >= 1.7.2 '
+                '(detected: {0})'.format(version_)
+            )
+    return _format_opts(opts)
+
+
+def _git_run(command, cwd=None, user=None, password=None, identity=None,
              ignore_retcode=False, failhard=True, redirect_stderr=False,
-             **kwargs):
+             saltenv='base', **kwargs):
     '''
     simple, throw an exception with the error message on an error return code.
 
@@ -158,7 +195,9 @@ def _git_run(command, cwd=None, runas=None, identity=None,
     env = {}
 
     if identity:
-        stderrs = []
+        _salt_cli = __opts__.get('__cli', '')
+        errors = []
+        missing_keys = []
 
         # if the statefile provides multiple identities, they need to be tried
         # (but also allow a string instead of a list)
@@ -167,15 +206,27 @@ def _git_run(command, cwd=None, runas=None, identity=None,
             identity = [identity]
 
         # try each of the identities, independently
+        tmp_identity_file = None
         for id_file in identity:
             if 'salt://' in id_file:
-                _id_file = id_file
-                id_file = __salt__['cp.cache_file'](id_file)
+                with salt.utils.files.set_umask(0o077):
+                    tmp_identity_file = salt.utils.files.mkstemp()
+                    _id_file = id_file
+                    id_file = __salt__['cp.get_file'](id_file,
+                                                      tmp_identity_file,
+                                                      saltenv)
                 if not id_file:
                     log.error('identity {0} does not exist.'.format(_id_file))
+                    __salt__['file.remove'](tmp_identity_file)
                     continue
+                else:
+                    if user:
+                        os.chown(id_file,
+                                 __salt__['file.user_to_uid'](user),
+                                 -1)
             else:
                 if not __salt__['file.file_exists'](id_file):
+                    missing_keys.append(id_file)
                     log.error('identity {0} does not exist.'.format(id_file))
                     continue
 
@@ -184,12 +235,13 @@ def _git_run(command, cwd=None, runas=None, identity=None,
             }
 
             # copy wrapper to area accessible by ``runas`` user
-            # currently no suppport in windows for wrapping git ssh
+            # currently no support in windows for wrapping git ssh
             ssh_id_wrapper = os.path.join(
                 salt.utils.templates.TEMPLATE_DIRNAME,
                 'git/ssh-id-wrapper'
             )
-            if salt.utils.is_windows():
+            tmp_ssh_wrapper = None
+            if salt.utils.platform.is_windows():
                 for suffix in ('', ' (x86)'):
                     ssh_exe = (
                         'C:\\Program Files{0}\\Git\\bin\\ssh.exe'
@@ -205,18 +257,36 @@ def _git_run(command, cwd=None, runas=None, identity=None,
                 # Use the windows batch file instead of the bourne shell script
                 ssh_id_wrapper += '.bat'
                 env['GIT_SSH'] = ssh_id_wrapper
+            elif not user or _path_is_executable_others(ssh_id_wrapper):
+                env['GIT_SSH'] = ssh_id_wrapper
             else:
-                tmp_file = salt.utils.mkstemp()
-                salt.utils.files.copyfile(ssh_id_wrapper, tmp_file)
-                os.chmod(tmp_file, 0o500)
-                os.chown(tmp_file, __salt__['file.user_to_uid'](runas), -1)
-                env['GIT_SSH'] = tmp_file
+                tmp_ssh_wrapper = salt.utils.files.mkstemp()
+                salt.utils.files.copyfile(ssh_id_wrapper, tmp_ssh_wrapper)
+                os.chmod(tmp_ssh_wrapper, 0o500)
+                os.chown(tmp_ssh_wrapper, __salt__['file.user_to_uid'](user), -1)
+                env['GIT_SSH'] = tmp_ssh_wrapper
+
+            if 'salt-call' not in _salt_cli \
+                    and __salt__['ssh.key_is_encrypted'](id_file):
+                errors.append(
+                    'Identity file {0} is passphrase-protected and cannot be '
+                    'used in a non-interactive command. Using salt-call from '
+                    'the minion will allow a passphrase-protected key to be '
+                    'used.'.format(id_file)
+                )
+                continue
+
+            log.info(
+                'Attempting git authentication using identity file {0}'
+                .format(id_file)
+            )
 
             try:
                 result = __salt__['cmd.run_all'](
                     command,
                     cwd=cwd,
-                    runas=runas,
+                    runas=user,
+                    password=password,
                     env=env,
                     python_shell=False,
                     log_callback=salt.utils.url.redact_http_basic_auth,
@@ -224,27 +294,57 @@ def _git_run(command, cwd=None, runas=None, identity=None,
                     redirect_stderr=redirect_stderr,
                     **kwargs)
             finally:
-                if not salt.utils.is_windows() and 'GIT_SSH' in env:
-                    os.remove(env['GIT_SSH'])
+                # Cleanup the temporary ssh wrapper file
+                try:
+                    __salt__['file.remove'](tmp_ssh_wrapper)
+                    log.debug('Removed ssh wrapper file %s', tmp_ssh_wrapper)
+                except AttributeError:
+                    # No wrapper was used
+                    pass
+                except (SaltInvocationError, CommandExecutionError) as exc:
+                    log.warning('Failed to remove ssh wrapper file %s: %s', tmp_ssh_wrapper, exc)
 
-            # if the command was successful, no need to try additional IDs
+                # Cleanup the temporary identity file
+                try:
+                    __salt__['file.remove'](tmp_identity_file)
+                    log.debug('Removed identity file %s', tmp_identity_file)
+                except AttributeError:
+                    # No identify file was used
+                    pass
+                except (SaltInvocationError, CommandExecutionError) as exc:
+                    log.warning('Failed to remove identity file %s: %s', tmp_identity_file, exc)
+
+            # If the command was successful, no need to try additional IDs
             if result['retcode'] == 0:
                 return result
             else:
-                stderr = \
-                    salt.utils.url.redact_http_basic_auth(result['stderr'])
-                stderrs.append(stderr)
+                err = result['stdout' if redirect_stderr else 'stderr']
+                if err:
+                    errors.append(salt.utils.url.redact_http_basic_auth(err))
 
-        # we've tried all IDs and still haven't passed, so error out
+        # We've tried all IDs and still haven't passed, so error out
         if failhard:
-            raise CommandExecutionError('\n\n'.join(stderrs))
+            msg = (
+                'Unable to authenticate using identity file:\n\n{0}'.format(
+                    '\n'.join(errors)
+                )
+            )
+            if missing_keys:
+                if errors:
+                    msg += '\n\n'
+                msg += (
+                    'The following identity file(s) were not found: {0}'
+                    .format(', '.join(missing_keys))
+                )
+            raise CommandExecutionError(msg)
         return result
 
     else:
         result = __salt__['cmd.run_all'](
             command,
             cwd=cwd,
-            runas=runas,
+            runas=user,
+            password=password,
             env=env,
             python_shell=False,
             log_callback=salt.utils.url.redact_http_basic_auth,
@@ -262,34 +362,36 @@ def _git_run(command, cwd=None, runas=None, identity=None,
                 msg = 'Command \'{0}\' failed'.format(
                     salt.utils.url.redact_http_basic_auth(gitcommand)
                 )
-                if result['stderr']:
+                err = result['stdout' if redirect_stderr else 'stderr']
+                if err:
                     msg += ': {0}'.format(
-                        salt.utils.url.redact_http_basic_auth(result['stderr'])
+                        salt.utils.url.redact_http_basic_auth(err)
                     )
                 raise CommandExecutionError(msg)
             return result
 
 
-def _get_toplevel(path, user=None):
+def _get_toplevel(path, user=None, password=None):
     '''
     Use git rev-parse to return the top level of a repo
     '''
     return _git_run(
         ['git', 'rev-parse', '--show-toplevel'],
         cwd=path,
-        runas=user
-    )['stdout']
+        user=user,
+        password=password)['stdout']
 
 
-def _git_config(cwd, user):
+def _git_config(cwd, user, password):
     '''
-    Helper to retrive git config options
+    Helper to retrieve git config options
     '''
     contextkey = 'git.config.' + cwd
     if contextkey not in __context__:
         git_dir = rev_parse(cwd,
                             opts=['--git-dir'],
                             user=user,
+                            password=password,
                             ignore_retcode=True)
         if not os.path.isabs(git_dir):
             paths = (cwd, git_dir, 'config')
@@ -299,7 +401,7 @@ def _git_config(cwd, user):
     return __context__[contextkey]
 
 
-def _which_git_config(global_, cwd, user):
+def _which_git_config(global_, cwd, user, password):
     '''
     Based on whether global or local config is desired, return a list of CLI
     args to include in the git config command.
@@ -312,10 +414,16 @@ def _which_git_config(global_, cwd, user):
         return ['--local']
     else:
         # For earlier versions, need to specify the path to the git config file
-        return ['--file', _git_config(cwd, user)]
+        return ['--file', _git_config(cwd, user, password)]
 
 
-def add(cwd, filename, opts='', user=None, ignore_retcode=False):
+def add(cwd,
+        filename,
+        opts='',
+        git_opts='',
+        user=None,
+        password=None,
+        ignore_retcode=False):
     '''
     .. versionchanged:: 2015.8.0
         The ``--verbose`` command line argument is now implied
@@ -336,9 +444,25 @@ def add(cwd, filename, opts='', user=None, ignore_retcode=False):
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``add``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -359,23 +483,26 @@ def add(cwd, filename, opts='', user=None, ignore_retcode=False):
     cwd = _expand_path(cwd, user)
     if not isinstance(filename, six.string_types):
         filename = str(filename)
-    command = ['git', 'add', '--verbose']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.extend(['add', '--verbose'])
     command.extend(
         [x for x in _format_opts(opts) if x not in ('-v', '--verbose')]
     )
     command.extend(['--', filename])
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
 def archive(cwd,
             output,
             rev='HEAD',
-            fmt=None,
             prefix=None,
+            git_opts='',
             user=None,
+            password=None,
             ignore_retcode=False,
             **kwargs):
     '''
@@ -423,11 +550,6 @@ def archive(cwd,
 
         .. versionadded:: 2015.8.0
 
-    fmt
-        Replaced by ``format`` in version 2015.8.0
-
-        .. deprecated:: 2015.8.0
-
     prefix
         Prepend ``<prefix>`` to every filename in the archive. If unspecified,
         the name of the directory at the top level of the repository will be
@@ -447,9 +569,25 @@ def archive(cwd,
             specifying a prefix, if the prefix is intended to create a
             top-level directory.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``archive`` subcommand), in a single string. This is useful for passing
+        ``-c`` to run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -472,20 +610,13 @@ def archive(cwd,
     # allows us to accept 'format' as an argument to this function without
     # shadowing the format() global, while also not allowing unwanted arguments
     # to be passed.
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     format_ = kwargs.pop('format', None)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
-    if fmt:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'The \'fmt\' argument to git.archive has been deprecated, please '
-            'use \'format\' instead.'
-        )
-        format_ = fmt
-
-    command = ['git', 'archive']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('archive')
     # If prefix was set to '' then we skip adding the --prefix option
     if prefix != '':
         if prefix:
@@ -500,13 +631,25 @@ def archive(cwd,
             format_ = str(format_)
         command.extend(['--format', format_])
     command.extend(['--output', output, rev])
-    _git_run(command, cwd=cwd, runas=user, ignore_retcode=ignore_retcode)
+    _git_run(command,
+             cwd=cwd,
+             user=user,
+             password=password,
+             ignore_retcode=ignore_retcode)
     # No output (unless --verbose is used, and we don't want all files listed
-    # in the output in case there are thousands), so just return True
+    # in the output in case there are thousands), so just return True. If there
+    # was an error in the git command, it will have already raised an exception
+    # and we will never get to this return statement.
     return True
 
 
-def branch(cwd, name=None, opts='', user=None, ignore_retcode=False):
+def branch(cwd,
+           name=None,
+           opts='',
+           git_opts='',
+           user=None,
+           password=None,
+           ignore_retcode=False):
     '''
     Interface to `git-branch(1)`_
 
@@ -531,9 +674,25 @@ def branch(cwd, name=None, opts='', user=None, ignore_retcode=False):
             examples below) to avoid causing errors with Salt's own argument
             parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``branch``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -558,11 +717,16 @@ def branch(cwd, name=None, opts='', user=None, ignore_retcode=False):
         salt myminion git.branch /path/to/repo newbranch opts='-m oldbranch'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'branch']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('branch')
     command.extend(_format_opts(opts))
     if name is not None:
         command.append(name)
-    _git_run(command, cwd=cwd, runas=user, ignore_retcode=ignore_retcode)
+    _git_run(command,
+             cwd=cwd,
+             user=user,
+             password=password,
+             ignore_retcode=ignore_retcode)
     return True
 
 
@@ -570,7 +734,9 @@ def checkout(cwd,
              rev=None,
              force=False,
              opts='',
+             git_opts='',
              user=None,
+             password=None,
              ignore_retcode=False):
     '''
     Interface to `git-checkout(1)`_
@@ -586,6 +752,17 @@ def checkout(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``checkout`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     rev
         The remote branch or revision to checkout.
 
@@ -598,6 +775,12 @@ def checkout(cwd,
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -622,7 +805,8 @@ def checkout(cwd,
         salt myminion git.checkout /path/to/repo opts='-b newbranch'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'checkout']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('checkout')
     if force:
         command.append('--force')
     opts = _format_opts(opts)
@@ -640,7 +824,8 @@ def checkout(cwd,
     # Checkout message goes to stderr
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode,
                     redirect_stderr=True)['stdout']
 
@@ -649,12 +834,14 @@ def clone(cwd,
           url=None,  # Remove default value once 'repository' arg is removed
           name=None,
           opts='',
+          git_opts='',
           user=None,
+          password=None,
           identity=None,
           https_user=None,
           https_pass=None,
           ignore_retcode=False,
-          repository=None):
+          saltenv='base'):
     '''
     Interface to `git-clone(1)`_
 
@@ -680,27 +867,48 @@ def clone(cwd,
     opts
         Any additional options to add to the command line, in a single string
 
+    git_opts
+        Any additional options to add to git command itself (not the ``clone``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
-        Run git as a user other than what the minion runs as
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     https_user
         Set HTTP Basic Auth username. Only accepted for HTTPS URLs.
@@ -718,6 +926,11 @@ def clone(cwd,
 
         .. versionadded:: 2015.8.0
 
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
+
     .. _`git-clone(1)`: http://git-scm.com/docs/git-clone
 
     CLI Example:
@@ -727,13 +940,6 @@ def clone(cwd,
         salt myminion git.clone /path/to/repo_parent_dir git://github.com/saltstack/salt.git
     '''
     cwd = _expand_path(cwd, user)
-    if repository is not None:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'The \'repository\' argument to git.clone has been '
-            'deprecated, please use \'url\' instead.'
-        )
-        url = repository
 
     if not url:
         raise SaltInvocationError('Missing \'url\' argument')
@@ -746,7 +952,8 @@ def clone(cwd,
     except ValueError as exc:
         raise SaltInvocationError(exc.__str__())
 
-    command = ['git', 'clone']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('clone')
     command.extend(_format_opts(opts))
     command.extend(['--', url])
     if name is not None:
@@ -764,19 +971,23 @@ def clone(cwd,
         # https://github.com/saltstack/salt/issues/15519#issuecomment-128531310
         # On Windows, just fall back to None (runs git clone command using the
         # home directory as the cwd).
-        clone_cwd = '/tmp' if not salt.utils.is_windows() else None
+        clone_cwd = '/tmp' if not salt.utils.platform.is_windows() else None
     _git_run(command,
              cwd=clone_cwd,
-             runas=user,
+             user=user,
+             password=password,
              identity=identity,
-             ignore_retcode=ignore_retcode)
+             ignore_retcode=ignore_retcode,
+             saltenv=saltenv)
     return True
 
 
 def commit(cwd,
            message,
            opts='',
+           git_opts='',
            user=None,
+           password=None,
            filename=None,
            ignore_retcode=False):
     '''
@@ -789,7 +1000,8 @@ def commit(cwd,
         Commit message
 
     opts
-        Any additional options to add to the command line, in a single string
+        Any additional options to add to the command line, in a single string.
+        These opts will be added to the end of the git command being run.
 
         .. note::
             On the Salt CLI, if the opts are preceded with a dash, it is
@@ -799,9 +1011,25 @@ def commit(cwd,
             The ``-m`` option should not be passed here, as the commit message
             will be defined by the ``message`` argument.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``commit``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     filename
         The location of the file/directory to commit, relative to ``cwd``.
@@ -831,7 +1059,8 @@ def commit(cwd,
         salt myminion git.commit /path/to/repo 'The commit message' filename=foo/bar.py
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'commit', '-m', message]
+    command = ['git'] + _format_git_opts(git_opts)
+    command.extend(['commit', '-m', message])
     command.extend(_format_opts(opts))
     if filename:
         if not isinstance(filename, six.string_types):
@@ -841,13 +1070,15 @@ def commit(cwd,
         command.extend(['--', filename])
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
 def config_get(key,
                cwd=None,
                user=None,
+               password=None,
                ignore_retcode=False,
                **kwargs):
     '''
@@ -866,7 +1097,7 @@ def config_get(key,
             Now optional if ``global`` is set to ``True``
 
     global : False
-        If ``True``, query the global git configuraton. Otherwise, only the
+        If ``True``, query the global git configuration. Otherwise, only the
         local git configuration will be queried.
 
         .. versionadded:: 2015.8.0
@@ -880,6 +1111,12 @@ def config_get(key,
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -905,6 +1142,7 @@ def config_get(key,
                             key,
                             cwd=cwd,
                             user=user,
+                            password=password,
                             ignore_retcode=ignore_retcode,
                             **kwargs)
 
@@ -926,6 +1164,7 @@ def config_get_regexp(key,
                       value_regex=None,
                       cwd=None,
                       user=None,
+                      password=None,
                       ignore_retcode=False,
                       **kwargs):
     r'''
@@ -954,12 +1193,18 @@ def config_get_regexp(key,
         The path to the git checkout
 
     global : False
-        If ``True``, query the global git configuraton. Otherwise, only the
+        If ``True``, query the global git configuration. Otherwise, only the
         local git configuration will be queried.
 
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -982,6 +1227,7 @@ def config_get_regexp(key,
                             value_regex=value_regex,
                             cwd=cwd,
                             user=user,
+                            password=password,
                             ignore_retcode=ignore_retcode,
                             **kwargs)
 
@@ -997,7 +1243,7 @@ def config_get_regexp(key,
         ret.setdefault(param, []).append(value)
     return ret
 
-config_get_regex = salt.utils.alias_function(config_get_regexp, 'config_get_regex')
+config_get_regex = salt.utils.functools.alias_function(config_get_regexp, 'config_get_regex')
 
 
 def config_set(key,
@@ -1005,6 +1251,7 @@ def config_set(key,
                multivar=None,
                cwd=None,
                user=None,
+               password=None,
                ignore_retcode=False,
                **kwargs):
     '''
@@ -1048,6 +1295,12 @@ def config_set(key,
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
@@ -1057,13 +1310,6 @@ def config_set(key,
     global : False
         If ``True``, set a global variable
 
-    is_global : False
-        If ``True``, set a global variable
-
-        .. deprecated:: 2015.8.0
-            Use ``global`` instead
-
-
     CLI Example:
 
     .. code-block:: bash
@@ -1071,21 +1317,11 @@ def config_set(key,
         salt myminion git.config_set user.email me@example.com cwd=/path/to/repo
         salt myminion git.config_set user.email foo@bar.com global=True
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     add_ = kwargs.pop('add', False)
     global_ = kwargs.pop('global', False)
-    is_global = kwargs.pop('is_global', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
-
-    if is_global:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'The \'is_global\' argument to git.config_set has been '
-            'deprecated, please set the \'cwd\' argument to \'global\' '
-            'instead.'
-        )
-        global_ = True
+        salt.utils.args.invalid_kwargs(kwargs)
 
     if cwd is None:
         if not global_:
@@ -1131,7 +1367,8 @@ def config_set(key,
         command.extend([key, value])
         _git_run(command,
                  cwd=cwd,
-                 runas=user,
+                 user=user,
+                 password=password,
                  ignore_retcode=ignore_retcode)
     else:
         for idx, target in enumerate(multivar):
@@ -1143,10 +1380,12 @@ def config_set(key,
             command.extend([key, target])
             _git_run(command,
                      cwd=cwd,
-                     runas=user,
+                     user=user,
+                     password=password,
                      ignore_retcode=ignore_retcode)
     return config_get(key,
                       user=user,
+                      password=password,
                       cwd=cwd,
                       ignore_retcode=ignore_retcode,
                       **{'all': True, 'global': global_})
@@ -1156,6 +1395,7 @@ def config_unset(key,
                  value_regex=None,
                  cwd=None,
                  user=None,
+                 password=None,
                  ignore_retcode=False,
                  **kwargs):
     '''
@@ -1186,6 +1426,12 @@ def config_unset(key,
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
@@ -1198,11 +1444,11 @@ def config_unset(key,
         salt myminion git.config_unset /path/to/repo foo.bar
         salt myminion git.config_unset /path/to/repo foo.bar all=True
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     all_ = kwargs.pop('all', False)
     global_ = kwargs.pop('global', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     if cwd is None:
         if not global_:
@@ -1217,7 +1463,7 @@ def config_unset(key,
         command.append('--unset-all')
     else:
         command.append('--unset')
-    command.extend(_which_git_config(global_, cwd, user))
+    command.extend(_which_git_config(global_, cwd, user, password))
 
     if not isinstance(key, six.string_types):
         key = str(key)
@@ -1228,7 +1474,8 @@ def config_unset(key,
         command.append(value_regex)
     ret = _git_run(command,
                    cwd=cwd if cwd != 'global' else None,
-                   runas=user,
+                   user=user,
+                   password=password,
                    ignore_retcode=ignore_retcode,
                    failhard=False)
     retcode = ret['retcode']
@@ -1240,6 +1487,7 @@ def config_unset(key,
         if config_get(cwd,
                       key,
                       user=user,
+                      password=password,
                       ignore_retcode=ignore_retcode) is None:
             raise CommandExecutionError(
                 'Key \'{0}\' does not exist'.format(key)
@@ -1261,7 +1509,10 @@ def config_unset(key,
         raise CommandExecutionError(msg)
 
 
-def current_branch(cwd, user=None, ignore_retcode=False):
+def current_branch(cwd,
+                   user=None,
+                   password=None,
+                   ignore_retcode=False):
     '''
     Returns the current branch name of a local checkout. If HEAD is detached,
     return the SHA1 of the revision which is currently checked out.
@@ -1272,6 +1523,12 @@ def current_branch(cwd, user=None, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -1290,11 +1547,16 @@ def current_branch(cwd, user=None, ignore_retcode=False):
     command = ['git', 'rev-parse', '--abbrev-ref', 'HEAD']
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def describe(cwd, rev='HEAD', user=None, ignore_retcode=False):
+def describe(cwd,
+             rev='HEAD',
+             user=None,
+             password=None,
+             ignore_retcode=False):
     '''
     Returns the `git-describe(1)`_ string (or the SHA1 hash if there are no
     tags) for the given revision.
@@ -1308,6 +1570,12 @@ def describe(cwd, rev='HEAD', user=None, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -1328,11 +1596,174 @@ def describe(cwd, rev='HEAD', user=None, ignore_retcode=False):
     cwd = _expand_path(cwd, user)
     if not isinstance(rev, six.string_types):
         rev = str(rev)
-    command = ['git', 'describe', rev]
+    command = ['git', 'describe']
+    if _LooseVersion(version(versioninfo=False)) >= _LooseVersion('1.5.6'):
+        command.append('--always')
+    command.append(rev)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
+
+
+def diff(cwd,
+         item1=None,
+         item2=None,
+         opts='',
+         git_opts='',
+         user=None,
+         password=None,
+         no_index=False,
+         cached=False,
+         paths=None):
+    '''
+    .. versionadded:: 2015.8.12,2016.3.3,2016.11.0
+
+    Interface to `git-diff(1)`_
+
+    cwd
+        The path to the git checkout
+
+    item1 and item2
+        Revision(s) to pass to the ``git diff`` command. One or both of these
+        arguments may be ignored if some of the options below are set to
+        ``True``. When ``cached`` is ``False``, and no revisions are passed
+        to this function, then the current working tree will be compared
+        against the index (i.e. unstaged changes). When two revisions are
+        passed, they will be compared to each other.
+
+    opts
+        Any additional options to add to the command line, in a single string
+
+        .. note::
+            On the Salt CLI, if the opts are preceded with a dash, it is
+            necessary to precede them with ``opts=`` (as in the CLI examples
+            below) to avoid causing errors with Salt's own argument parsing.
+
+    git_opts
+        Any additional options to add to git command itself (not the ``diff``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
+    user
+        User under which to run the git command. By default, the command is run
+        by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
+    no_index : False
+        When it is necessary to diff two files in the same repo against each
+        other, and not diff two different revisions, set this option to
+        ``True``. If this is left ``False`` in these instances, then a normal
+        ``git diff`` will be performed against the index (i.e. unstaged
+        changes), and files in the ``paths`` option will be used to narrow down
+        the diff output.
+
+        .. note::
+            Requires Git 1.5.1 or newer. Additionally, when set to ``True``,
+            ``item1`` and ``item2`` will be ignored.
+
+    cached : False
+        If ``True``, compare staged changes to ``item1`` (if specified),
+        otherwise compare them to the most recent commit.
+
+        .. note::
+            ``item2`` is ignored if this option is is set to ``True``.
+
+    paths
+        File paths to pass to the ``git diff`` command. Can be passed as a
+        comma-separated list or a Python list.
+
+    .. _`git-diff(1)`: http://git-scm.com/docs/git-diff
+
+
+    CLI Example:
+
+    .. code-block:: bash
+
+        # Perform diff against the index (staging area for next commit)
+        salt myminion git.diff /path/to/repo
+        # Compare staged changes to the most recent commit
+        salt myminion git.diff /path/to/repo cached=True
+        # Compare staged changes to a specific revision
+        salt myminion git.diff /path/to/repo mybranch cached=True
+        # Perform diff against the most recent commit (includes staged changes)
+        salt myminion git.diff /path/to/repo HEAD
+        # Diff two commits
+        salt myminion git.diff /path/to/repo abcdef1 aabbccd
+        # Diff two commits, only showing differences in the specified paths
+        salt myminion git.diff /path/to/repo abcdef1 aabbccd paths=path/to/file1,path/to/file2
+        # Diff two files with one being outside the working tree
+        salt myminion git.diff /path/to/repo no_index=True paths=path/to/file1,/absolute/path/to/file2
+    '''
+    if no_index and cached:
+        raise CommandExecutionError(
+            'The \'no_index\' and \'cached\' options cannot be used together'
+        )
+
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('diff')
+    command.extend(_format_opts(opts))
+
+    if paths is not None and not isinstance(paths, (list, tuple)):
+        try:
+            paths = paths.split(',')
+        except AttributeError:
+            paths = str(paths).split(',')
+
+    ignore_retcode = False
+    failhard = True
+
+    if no_index:
+        if _LooseVersion(version(versioninfo=False)) < _LooseVersion('1.5.1'):
+            raise CommandExecutionError(
+                'The \'no_index\' option is only supported in Git 1.5.1 and '
+                'newer'
+            )
+        ignore_retcode = True
+        failhard = False
+        command.append('--no-index')
+        for value in [x for x in (item1, item2) if x]:
+            log.warning(
+                'Revision \'%s\' ignored in git diff, as revisions cannot be '
+                'used when no_index=True', value
+            )
+
+    elif cached:
+        command.append('--cached')
+        if item1:
+            command.append(item1)
+        if item2:
+            log.warning(
+                'Second revision \'%s\' ignored in git diff, at most one '
+                'revision is considered when cached=True', item2
+            )
+
+    else:
+        for value in [x for x in (item1, item2) if x]:
+            command.append(value)
+
+    if paths:
+        command.append('--')
+        command.extend(paths)
+
+    return _git_run(command,
+                    cwd=cwd,
+                    user=user,
+                    password=password,
+                    ignore_retcode=ignore_retcode,
+                    failhard=failhard,
+                    redirect_stderr=True)['stdout']
 
 
 def fetch(cwd,
@@ -1340,9 +1771,12 @@ def fetch(cwd,
           force=False,
           refspecs=None,
           opts='',
+          git_opts='',
           user=None,
+          password=None,
           identity=None,
-          ignore_retcode=False):
+          ignore_retcode=False,
+          saltenv='base'):
     '''
     .. versionchanged:: 2015.8.2
         Return data is now a dictionary containing information on branches and
@@ -1378,31 +1812,59 @@ def fetch(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``fetch``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
 
         .. versionadded:: 2015.8.0
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     .. _`git-fetch(1)`: http://git-scm.com/docs/git-fetch
 
@@ -1415,7 +1877,8 @@ def fetch(cwd,
         salt myminion git.fetch /path/to/repo identity=/root/.ssh/id_rsa
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'fetch']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('fetch')
     if force:
         command.append('--force')
     command.extend(
@@ -1440,10 +1903,12 @@ def fetch(cwd,
         command.extend(refspec_list)
     output = _git_run(command,
                       cwd=cwd,
-                      runas=user,
+                      user=user,
+                      password=password,
                       identity=identity,
                       ignore_retcode=ignore_retcode,
-                      redirect_stderr=True)['stdout']
+                      redirect_stderr=True,
+                      saltenv=saltenv)['stdout']
 
     update_re = re.compile(
         r'[\s*]*(?:([0-9a-f]+)\.\.([0-9a-f]+)|'
@@ -1478,7 +1943,9 @@ def init(cwd,
          separate_git_dir=None,
          shared=None,
          opts='',
+         git_opts='',
          user=None,
+         password=None,
          ignore_retcode=False):
     '''
     Interface to `git-init(1)`_
@@ -1515,9 +1982,25 @@ def init(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``init``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -1540,7 +2023,8 @@ def init(cwd,
         salt myminion git.init /path/to/bare/repo.git bare=True
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'init']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('init')
     if bare:
         command.append('--bare')
     if template is not None:
@@ -1552,7 +2036,8 @@ def init(cwd,
             separate_git_dir = str(separate_git_dir)
         command.append('--separate-git-dir={0}'.format(separate_git_dir))
     if shared is not None:
-        if isinstance(shared, six.integer_types):
+        if isinstance(shared, six.integer_types) \
+                and not isinstance(shared, bool):
             shared = '0' + str(shared)
         elif not isinstance(shared, six.string_types):
             # Using lower here because booleans would be capitalized when
@@ -1562,11 +2047,14 @@ def init(cwd,
     command.extend(_format_opts(opts))
     command.append(cwd)
     return _git_run(command,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def is_worktree(cwd, user=None):
+def is_worktree(cwd,
+                user=None,
+                password=None):
     '''
     .. versionadded:: 2015.8.0
 
@@ -1581,6 +2069,12 @@ def is_worktree(cwd, user=None):
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
 
     CLI Example:
 
@@ -1590,12 +2084,12 @@ def is_worktree(cwd, user=None):
     '''
     cwd = _expand_path(cwd, user)
     try:
-        toplevel = _get_toplevel(cwd)
+        toplevel = _get_toplevel(cwd, user=user, password=password)
     except CommandExecutionError:
         return False
     gitdir = os.path.join(toplevel, '.git')
     try:
-        with salt.utils.fopen(gitdir, 'r') as fp_:
+        with salt.utils.files.fopen(gitdir, 'r') as fp_:
             for line in fp_:
                 try:
                     label, path = line.split(None, 1)
@@ -1616,7 +2110,11 @@ def is_worktree(cwd, user=None):
     return False
 
 
-def list_branches(cwd, remote=False, user=None, ignore_retcode=False):
+def list_branches(cwd,
+                  remote=False,
+                  user=None,
+                  password=None,
+                  ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
 
@@ -1639,6 +2137,12 @@ def list_branches(cwd, remote=False, user=None, ignore_retcode=False):
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
@@ -1658,11 +2162,15 @@ def list_branches(cwd, remote=False, user=None, ignore_retcode=False):
                'refs/{0}/'.format('heads' if not remote else 'remotes')]
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout'].splitlines()
 
 
-def list_tags(cwd, user=None, ignore_retcode=False):
+def list_tags(cwd,
+              user=None,
+              password=None,
+              ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
 
@@ -1674,6 +2182,12 @@ def list_tags(cwd, user=None, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -1693,11 +2207,16 @@ def list_tags(cwd, user=None, ignore_retcode=False):
                'refs/tags/']
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout'].splitlines()
 
 
-def list_worktrees(cwd, stale=False, user=None, **kwargs):
+def list_worktrees(cwd,
+                   stale=False,
+                   user=None,
+                   password=None,
+                   **kwargs):
     '''
     .. versionadded:: 2015.8.0
 
@@ -1721,6 +2240,12 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     all : False
         If ``True``, then return all worktrees tracked under
@@ -1747,23 +2272,24 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
     if not _check_worktree_support(failhard=True):
         return {}
     cwd = _expand_path(cwd, user)
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     all_ = kwargs.pop('all', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     if all_ and stale:
         raise CommandExecutionError(
             '\'all\' and \'stale\' cannot both be set to True'
         )
 
-    def _git_tag_points_at(cwd, rev, user=None):
+    def _git_tag_points_at(cwd, rev, user=None, password=None):
         '''
         Get any tags that point at a
         '''
         return _git_run(['git', 'tag', '--points-at', rev],
                         cwd=cwd,
-                        runas=user)['stdout'].splitlines()
+                        user=user,
+                        password=password)['stdout'].splitlines()
 
     def _desired(is_stale, all_, stale):
         '''
@@ -1799,7 +2325,8 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
     if has_native_list_subcommand:
         out = _git_run(['git', 'worktree', 'list', '--porcelain'],
                        cwd=cwd,
-                       runas=user)
+                       user=user,
+                       password=password)
         if out['retcode'] != 0:
             msg = 'Failed to list worktrees'
             if out['stderr']:
@@ -1868,7 +2395,10 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
             if wt_ptr['detached']:
                 wt_ptr['branch'] = None
                 # Check to see if HEAD points at a tag
-                tags_found = _git_tag_points_at(cwd, wt_ptr['HEAD'], user)
+                tags_found = _git_tag_points_at(cwd,
+                                                wt_ptr['HEAD'],
+                                                user=user,
+                                                password=password)
                 if tags_found:
                     wt_ptr['tags'] = tags_found
             else:
@@ -1878,11 +2408,12 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
         return ret
 
     else:
-        toplevel = _get_toplevel(cwd, user)
+        toplevel = _get_toplevel(cwd, user=user, password=password)
         try:
             worktree_root = rev_parse(cwd,
                                       opts=['--git-path', 'worktrees'],
-                                      user=user)
+                                      user=user,
+                                      password=password)
         except CommandExecutionError as exc:
             msg = 'Failed to find worktree location for ' + cwd
             log.error(msg, exc_info_on_loglevel=logging.DEBUG)
@@ -1900,7 +2431,7 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
             Return contents of a single line file with EOF newline stripped
             '''
             try:
-                with salt.utils.fopen(path, 'r') as fp_:
+                with salt.utils.files.fopen(path, 'r') as fp_:
                     for line in fp_:
                         ret = line.strip()
                         # Ignore other lines, if they exist (which they
@@ -1908,20 +2439,8 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
                         break
                     return ret
             except (IOError, OSError) as exc:
-                if exc.errno == errno.ENOENT:
-                    raise CommandExecutionError(
-                        '{0} does not exist'.format(path)
-                    )
-                elif exc.errno == errno.EACCES:
-                    raise CommandExecutionError(
-                        'Permission denied reading from {0}'.format(path)
-                    )
-                else:
-                    raise CommandExecutionError(
-                        'Error {0} encountered reading from {1}: {2}'.format(
-                            exc.errno, path, exc.strerror
-                        )
-                    )
+                # Raise a CommandExecutionError
+                salt.utils.files.process_read_exception(exc, path)
 
         for worktree_name in os.listdir(worktree_root):
             admin_dir = os.path.join(worktree_root, worktree_name)
@@ -1958,7 +2477,10 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
             if head_ref.startswith('ref: '):
                 head_ref = head_ref.split(None, 1)[-1]
                 wt_branch = head_ref.replace('refs/heads/', '', 1)
-                wt_head = rev_parse(cwd, rev=head_ref, user=user)
+                wt_head = rev_parse(cwd,
+                                    rev=head_ref,
+                                    user=user,
+                                    password=password)
                 wt_detached = False
             else:
                 wt_branch = None
@@ -1973,7 +2495,10 @@ def list_worktrees(cwd, stale=False, user=None, **kwargs):
 
             # Check to see if HEAD points at a tag
             if wt_detached:
-                tags_found = _git_tag_points_at(cwd, wt_head, user)
+                tags_found = _git_tag_points_at(cwd,
+                                                wt_head,
+                                                user=user,
+                                                password=password)
                 if tags_found:
                     wt_ptr['tags'] = tags_found
 
@@ -1984,11 +2509,14 @@ def ls_remote(cwd=None,
               remote='origin',
               ref=None,
               opts='',
+              git_opts='',
               user=None,
+              password=None,
               identity=None,
               https_user=None,
               https_pass=None,
-              ignore_retcode=False):
+              ignore_retcode=False,
+              saltenv='base'):
     '''
     Interface to `git-ls-remote(1)`_. Returns the upstream hash for a remote
     reference.
@@ -2022,25 +2550,49 @@ def ls_remote(cwd=None,
 
         .. versionadded:: 2015.8.0
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``ls-remote`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     https_user
         Set HTTP Basic Auth username. Only accepted for HTTPS URLs.
@@ -2057,6 +2609,11 @@ def ls_remote(cwd=None,
         returns a nonzero exit status.
 
         .. versionadded:: 2015.8.0
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     .. _`git-ls-remote(1)`: http://git-scm.com/docs/git-ls-remote
 
@@ -2077,7 +2634,8 @@ def ls_remote(cwd=None,
                                                     https_only=True)
     except ValueError as exc:
         raise SaltInvocationError(exc.__str__())
-    command = ['git', 'ls-remote']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('ls-remote')
     command.extend(_format_opts(opts))
     if not isinstance(remote, six.string_types):
         remote = str(remote)
@@ -2088,9 +2646,11 @@ def ls_remote(cwd=None,
         command.extend([ref])
     output = _git_run(command,
                       cwd=cwd,
-                      runas=user,
+                      user=user,
+                      password=password,
                       identity=identity,
-                      ignore_retcode=ignore_retcode)['stdout']
+                      ignore_retcode=ignore_retcode,
+                      saltenv=saltenv)['stdout']
     ret = {}
     for line in output.splitlines():
         try:
@@ -2104,7 +2664,9 @@ def ls_remote(cwd=None,
 def merge(cwd,
           rev=None,
           opts='',
+          git_opts='',
           user=None,
+          password=None,
           ignore_retcode=False,
           **kwargs):
     '''
@@ -2119,13 +2681,6 @@ def merge(cwd,
 
         .. versionadded:: 2015.8.0
 
-    branch
-        The remote branch or revision to merge into the current branch
-        Revision to merge into the current branch
-
-        .. deprecated:: 2015.8.0
-            Use ``rev`` instead.
-
     opts
         Any additional options to add to the command line, in a single string
 
@@ -2134,9 +2689,25 @@ def merge(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``merge``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -2158,20 +2729,13 @@ def merge(cwd,
         # .. or merge another rev
         salt myminion git.merge /path/to/repo rev=upstream/foo
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
-    branch_ = kwargs.pop('branch', None)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     cwd = _expand_path(cwd, user)
-    if branch_:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'The \'branch\' argument to git.merge has been deprecated, please '
-            'use \'rev\' instead.'
-        )
-        rev = branch_
-    command = ['git', 'merge']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('merge')
     command.extend(_format_opts(opts))
     if rev:
         if not isinstance(rev, six.string_types):
@@ -2179,7 +2743,8 @@ def merge(cwd,
         command.append(rev)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
@@ -2190,7 +2755,9 @@ def merge_base(cwd,
                independent=False,
                fork_point=None,
                opts='',
+               git_opts='',
                user=None,
+               password=None,
                ignore_retcode=False,
                **kwargs):
     '''
@@ -2253,9 +2820,26 @@ def merge_base(cwd,
             This option should not be necessary unless new CLI arguments are
             added to `git-merge-base(1)`_ and are not yet supported in Salt.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``merge-base`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         if ``True``, do not log an error to the minion log if the git command
@@ -2277,10 +2861,10 @@ def merge_base(cwd,
         salt myminion git.merge_base /path/to/repo refs=mybranch fork_point=upstream/master
     '''
     cwd = _expand_path(cwd, user)
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     all_ = kwargs.pop('all', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     if all_ and (independent or is_ancestor or fork_point):
         raise SaltInvocationError(
@@ -2327,14 +2911,17 @@ def merge_base(cwd,
                                      rev=refs[0],
                                      opts=['--verify'],
                                      user=user,
+                                     password=password,
                                      ignore_retcode=ignore_retcode)
             return merge_base(cwd,
                               refs=refs,
                               is_ancestor=False,
                               user=user,
+                              password=password,
                               ignore_retcode=ignore_retcode) == first_commit
 
-    command = ['git', 'merge-base']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('merge-base')
     command.extend(_format_opts(opts))
     if all_:
         command.append('--all')
@@ -2353,7 +2940,8 @@ def merge_base(cwd,
             command.append(str(ref))
     result = _git_run(command,
                       cwd=cwd,
-                      runas=user,
+                      user=user,
+                      password=password,
                       ignore_retcode=ignore_retcode,
                       failhard=False if is_ancestor else True)
     if is_ancestor:
@@ -2369,6 +2957,7 @@ def merge_tree(cwd,
                ref2,
                base=None,
                user=None,
+               password=None,
                ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
@@ -2393,6 +2982,12 @@ def merge_tree(cwd,
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         if ``True``, do not log an error to the minion log if the git command
@@ -2425,11 +3020,19 @@ def merge_tree(cwd,
     command.extend([base, ref1, ref2])
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def pull(cwd, opts='', user=None, identity=None, ignore_retcode=False):
+def pull(cwd,
+         opts='',
+         git_opts='',
+         user=None,
+         password=None,
+         identity=None,
+         ignore_retcode=False,
+         saltenv='base'):
     '''
     Interface to `git-pull(1)`_
 
@@ -2444,31 +3047,59 @@ def pull(cwd, opts='', user=None, identity=None, ignore_retcode=False):
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``pull``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
 
         .. versionadded:: 2015.8.0
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     .. _`git-pull(1)`: http://git-scm.com/docs/git-pull
 
@@ -2479,22 +3110,28 @@ def pull(cwd, opts='', user=None, identity=None, ignore_retcode=False):
         salt myminion git.pull /path/to/repo opts='--rebase origin master'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'pull']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('pull')
     command.extend(_format_opts(opts))
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     identity=identity,
-                    ignore_retcode=ignore_retcode)['stdout']
+                    ignore_retcode=ignore_retcode,
+                    saltenv=saltenv)['stdout']
 
 
 def push(cwd,
          remote=None,
          ref=None,
          opts='',
+         git_opts='',
          user=None,
+         password=None,
          identity=None,
          ignore_retcode=False,
+         saltenv='base',
          **kwargs):
     '''
     Interface to `git-push(1)`_
@@ -2514,12 +3151,6 @@ def push(cwd,
             Being a refspec_, this argument can include a colon to define local
             and remote ref names.
 
-    branch
-        Name of the ref to push
-
-        .. deprecated:: 2015.8.0
-            Use ``ref`` instead
-
     opts
         Any additional options to add to the command line, in a single string
 
@@ -2528,31 +3159,59 @@ def push(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``push``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
 
         .. versionadded:: 2015.8.0
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     .. _`git-push(1)`: http://git-scm.com/docs/git-push
     .. _refspec: http://git-scm.com/book/en/v2/Git-Internals-The-Refspec
@@ -2568,20 +3227,13 @@ def push(cwd,
         # Delete remote branch 'upstream/temp'
         salt myminion git.push /path/to/repo upstream :temp
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
-    branch_ = kwargs.pop('branch', None)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     cwd = _expand_path(cwd, user)
-    if branch_:
-        salt.utils.warn_until(
-            'Nitrogen',
-            'The \'branch\' argument to git.push has been deprecated, please '
-            'use \'ref\' instead.'
-        )
-        ref = branch_
-    command = ['git', 'push']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('push')
     command.extend(_format_opts(opts))
     if not isinstance(remote, six.string_types):
         remote = str(remote)
@@ -2590,12 +3242,20 @@ def push(cwd,
     command.extend([remote, ref])
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     identity=identity,
-                    ignore_retcode=ignore_retcode)['stdout']
+                    ignore_retcode=ignore_retcode,
+                    saltenv=saltenv)['stdout']
 
 
-def rebase(cwd, rev='master', opts='', user=None, ignore_retcode=False):
+def rebase(cwd,
+           rev='master',
+           opts='',
+           git_opts='',
+           user=None,
+           password=None,
+           ignore_retcode=False):
     '''
     Interface to `git-rebase(1)`_
 
@@ -2613,9 +3273,25 @@ def rebase(cwd, rev='master', opts='', user=None, ignore_retcode=False):
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``rebase``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -2638,20 +3314,23 @@ def rebase(cwd, rev='master', opts='', user=None, ignore_retcode=False):
     opts = _format_opts(opts)
     if any(x for x in opts if x in ('-i', '--interactive')):
         raise SaltInvocationError('Interactive rebases are not supported')
-    command = ['git', 'rebase']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('rebase')
     command.extend(opts)
     if not isinstance(rev, six.string_types):
         rev = str(rev)
-    command.extend(salt.utils.shlex_split(rev))
+    command.extend(salt.utils.args.shlex_split(rev))
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
 def remote_get(cwd,
                remote='origin',
                user=None,
+               password=None,
                redact_auth=True,
                ignore_retcode=False):
     '''
@@ -2666,6 +3345,12 @@ def remote_get(cwd,
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     redact_auth : True
         Set to ``False`` to include the username/password if the remote uses
@@ -2696,6 +3381,7 @@ def remote_get(cwd,
     cwd = _expand_path(cwd, user)
     all_remotes = remotes(cwd,
                           user=user,
+                          password=password,
                           redact_auth=redact_auth,
                           ignore_retcode=ignore_retcode)
     if remote not in all_remotes:
@@ -2710,10 +3396,12 @@ def remote_refs(url,
                 heads=False,
                 tags=False,
                 user=None,
+                password=None,
                 identity=None,
                 https_user=None,
                 https_pass=None,
-                ignore_retcode=False):
+                ignore_retcode=False,
+                saltenv='base'):
     '''
     .. versionadded:: 2015.8.0
 
@@ -2732,21 +3420,34 @@ def remote_refs(url,
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     https_user
         Set HTTP Basic Auth username. Only accepted for HTTPS URLs.
@@ -2757,6 +3458,11 @@ def remote_refs(url,
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     CLI Example:
 
@@ -2777,9 +3483,11 @@ def remote_refs(url,
     except ValueError as exc:
         raise SaltInvocationError(exc.__str__())
     output = _git_run(command,
-                      runas=user,
+                      user=user,
+                      password=password,
                       identity=identity,
-                      ignore_retcode=ignore_retcode)['stdout']
+                      ignore_retcode=ignore_retcode,
+                      saltenv=saltenv)['stdout']
     ret = {}
     for line in salt.utils.itertools.split(output, '\n'):
         try:
@@ -2794,6 +3502,7 @@ def remote_set(cwd,
                url,
                remote='origin',
                user=None,
+               password=None,
                https_user=None,
                https_pass=None,
                push_url=None,
@@ -2818,6 +3527,12 @@ def remote_set(cwd,
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     https_user
         Set HTTP Basic Auth username. Only accepted for HTTPS URLs.
@@ -2857,13 +3572,17 @@ def remote_set(cwd,
         salt myminion git.remote_set /path/to/repo https://github.com/user/repo.git remote=upstream push_url=git@github.com:user/repo.git
     '''
     # Check if remote exists
-    if remote in remotes(cwd, user=user):
+    if remote in remotes(cwd, user=user, password=password):
         log.debug(
             'Remote \'{0}\' already exists in git checkout located at {1}, '
             'removing so it can be re-added'.format(remote, cwd)
         )
         command = ['git', 'remote', 'rm', remote]
-        _git_run(command, cwd=cwd, runas=user, ignore_retcode=ignore_retcode)
+        _git_run(command,
+                 cwd=cwd,
+                 user=user,
+                 password=password,
+                 ignore_retcode=ignore_retcode)
     # Add remote
     try:
         url = salt.utils.url.add_http_basic_auth(url,
@@ -2877,7 +3596,11 @@ def remote_set(cwd,
     if not isinstance(url, six.string_types):
         url = str(url)
     command = ['git', 'remote', 'add', remote, url]
-    _git_run(command, cwd=cwd, runas=user, ignore_retcode=ignore_retcode)
+    _git_run(command,
+             cwd=cwd,
+             user=user,
+             password=password,
+             ignore_retcode=ignore_retcode)
     if push_url:
         if not isinstance(push_url, six.string_types):
             push_url = str(push_url)
@@ -2889,14 +3612,23 @@ def remote_set(cwd,
         except ValueError as exc:
             raise SaltInvocationError(exc.__str__())
         command = ['git', 'remote', 'set-url', '--push', remote, push_url]
-        _git_run(command, cwd=cwd, runas=user, ignore_retcode=ignore_retcode)
+        _git_run(command,
+                 cwd=cwd,
+                 user=user,
+                 password=password,
+                 ignore_retcode=ignore_retcode)
     return remote_get(cwd=cwd,
                       remote=remote,
                       user=user,
+                      password=password,
                       ignore_retcode=ignore_retcode)
 
 
-def remotes(cwd, user=None, redact_auth=True, ignore_retcode=False):
+def remotes(cwd,
+            user=None,
+            password=None,
+            redact_auth=True,
+            ignore_retcode=False):
     '''
     Get fetch and push URLs for each remote in a git checkout
 
@@ -2906,6 +3638,12 @@ def remotes(cwd, user=None, redact_auth=True, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     redact_auth : True
         Set to ``False`` to include the username/password for authenticated
@@ -2938,7 +3676,8 @@ def remotes(cwd, user=None, redact_auth=True, ignore_retcode=False):
     ret = {}
     output = _git_run(command,
                       cwd=cwd,
-                      runas=user,
+                      user=user,
+                      password=password,
                       ignore_retcode=ignore_retcode)['stdout']
     for remote_line in salt.utils.itertools.split(output, '\n'):
         try:
@@ -2963,7 +3702,12 @@ def remotes(cwd, user=None, redact_auth=True, ignore_retcode=False):
     return ret
 
 
-def reset(cwd, opts='', user=None, ignore_retcode=False):
+def reset(cwd,
+          opts='',
+          git_opts='',
+          user=None,
+          password=None,
+          ignore_retcode=False):
     '''
     Interface to `git-reset(1)`_, returns the stdout from the git command
 
@@ -2978,9 +3722,25 @@ def reset(cwd, opts='', user=None, ignore_retcode=False):
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``reset``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3001,15 +3761,23 @@ def reset(cwd, opts='', user=None, ignore_retcode=False):
         salt myminion git.reset /path/to/repo opts='--hard origin/master'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'reset']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('reset')
     command.extend(_format_opts(opts))
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def rev_parse(cwd, rev=None, opts='', user=None, ignore_retcode=False):
+def rev_parse(cwd,
+              rev=None,
+              opts='',
+              git_opts='',
+              user=None,
+              password=None,
+              ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
 
@@ -3028,9 +3796,26 @@ def rev_parse(cwd, rev=None, opts='', user=None, ignore_retcode=False):
     opts
         Any additional options to add to the command line, in a single string
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``rev-parse`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3057,7 +3842,8 @@ def rev_parse(cwd, rev=None, opts='', user=None, ignore_retcode=False):
         salt myminion git.rev_parse /path/to/repo opts='--is-bare-repository'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'rev-parse']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('rev-parse')
     command.extend(_format_opts(opts))
     if rev is not None:
         if not isinstance(rev, six.string_types):
@@ -3065,11 +3851,17 @@ def rev_parse(cwd, rev=None, opts='', user=None, ignore_retcode=False):
         command.append(rev)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def revision(cwd, rev='HEAD', short=False, user=None, ignore_retcode=False):
+def revision(cwd,
+             rev='HEAD',
+             short=False,
+             user=None,
+             password=None,
+             ignore_retcode=False):
     '''
     Returns the SHA1 hash of a given identifier (hash, branch, tag, HEAD, etc.)
 
@@ -3085,6 +3877,12 @@ def revision(cwd, rev='HEAD', short=False, user=None, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3107,11 +3905,18 @@ def revision(cwd, rev='HEAD', short=False, user=None, ignore_retcode=False):
     command.append(rev)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def rm_(cwd, filename, opts='', user=None, ignore_retcode=False):
+def rm_(cwd,
+        filename,
+        opts='',
+        git_opts='',
+        user=None,
+        password=None,
+        ignore_retcode=False):
     '''
     Interface to `git-rm(1)`_
 
@@ -3133,9 +3938,25 @@ def rm_(cwd, filename, opts='', user=None, ignore_retcode=False):
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``rm``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3155,16 +3976,24 @@ def rm_(cwd, filename, opts='', user=None, ignore_retcode=False):
         salt myminion git.rm /path/to/repo foo/baz opts='-r'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'rm']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('rm')
     command.extend(_format_opts(opts))
     command.extend(['--', filename])
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def stash(cwd, action='save', opts='', user=None, ignore_retcode=False):
+def stash(cwd,
+          action='save',
+          opts='',
+          git_opts='',
+          user=None,
+          password=None,
+          ignore_retcode=False):
     '''
     Interface to `git-stash(1)`_, returns the stdout from the git command
 
@@ -3178,9 +4007,25 @@ def stash(cwd, action='save', opts='', user=None, ignore_retcode=False):
         ``'show'``, etc.).  Omitting this argument will simply run ``git
         stash``.
 
+    git_opts
+        Any additional options to add to git command itself (not the ``stash``
+        subcommand), in a single string. This is useful for passing ``-c`` to
+        run git with temporary changes to the git configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3205,15 +4050,20 @@ def stash(cwd, action='save', opts='', user=None, ignore_retcode=False):
         # No numeric actions but this will prevent a traceback when the git
         # command is run.
         action = str(action)
-    command = ['git', 'stash', action]
+    command = ['git'] + _format_git_opts(git_opts)
+    command.extend(['stash', action])
     command.extend(_format_opts(opts))
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
-def status(cwd, user=None, ignore_retcode=False):
+def status(cwd,
+           user=None,
+           password=None,
+           ignore_retcode=False):
     '''
     .. versionchanged:: 2015.8.0
         Return data has changed from a list of lists to a dictionary
@@ -3226,6 +4076,12 @@ def status(cwd, user=None, ignore_retcode=False):
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3251,7 +4107,8 @@ def status(cwd, user=None, ignore_retcode=False):
     command = ['git', 'status', '-z', '--porcelain']
     output = _git_run(command,
                       cwd=cwd,
-                      runas=user,
+                      user=user,
+                      password=password,
                       ignore_retcode=ignore_retcode)['stdout']
     for line in output.split('\0'):
         try:
@@ -3265,9 +4122,12 @@ def status(cwd, user=None, ignore_retcode=False):
 def submodule(cwd,
               command,
               opts='',
+              git_opts='',
               user=None,
+              password=None,
               identity=None,
               ignore_retcode=False,
+              saltenv='base',
               **kwargs):
     '''
     .. versionchanged:: 2015.8.0
@@ -3297,6 +4157,17 @@ def submodule(cwd,
             necessary to precede them with ``opts=`` (as in the CLI examples
             below) to avoid causing errors with Salt's own argument parsing.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``submodule`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     init : False
         If ``True``, ensures that new submodules are initialized
 
@@ -3308,27 +4179,45 @@ def submodule(cwd,
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
 
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
+
     identity
         Path to a private key to use for ssh URLs
 
         .. warning::
 
-            Key must be passphraseless to allow for non-interactive login. For
-            greater security with passphraseless private keys, see the
-            `sshd(8)`_ manpage for information on securing the keypair from the
-            remote side in the ``authorized_keys`` file.
+            Unless Salt is invoked from the minion using ``salt-call``, the
+            key(s) must be passphraseless. For greater security with
+            passphraseless private keys, see the `sshd(8)`_ manpage for
+            information on securing the keypair from the remote side in the
+            ``authorized_keys`` file.
 
             .. _`sshd(8)`: http://www.man7.org/linux/man-pages/man8/sshd.8.html#AUTHORIZED_KEYS_FILE%20FORMAT
 
+        .. versionchanged:: 2015.8.7
+
+            Salt will no longer attempt to use passphrase-protected keys unless
+            invoked from the minion using ``salt-call``, to prevent blocking
+            waiting for user input.
+
         Key can also be specified as a SaltStack file server URL, eg. salt://location/identity_file
 
-        .. versionadded:: Boron
+        .. versionchanged:: 2016.3.0
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
         returns a nonzero exit status.
 
         .. versionadded:: 2015.8.0
+
+    saltenv
+        The default salt environment to pull sls files from
+
+        .. versionadded:: 2016.3.1
 
     .. _`git-submodule(1)`: http://git-scm.com/docs/git-submodule
 
@@ -3350,10 +4239,10 @@ def submodule(cwd,
         # Unregister submodule (2015.8.0 and later)
         salt myminion git.submodule /path/to/repo/sub/repo deinit
     '''
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     init_ = kwargs.pop('init', False)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     cwd = _expand_path(cwd, user)
     if init_:
@@ -3364,20 +4253,25 @@ def submodule(cwd,
         )
     if not isinstance(command, six.string_types):
         command = str(command)
-    cmd = ['git', 'submodule', command]
+    cmd = ['git'] + _format_git_opts(git_opts)
+    cmd.extend(['submodule', command])
     cmd.extend(_format_opts(opts))
     return _git_run(cmd,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     identity=identity,
-                    ignore_retcode=ignore_retcode)['stdout']
+                    ignore_retcode=ignore_retcode,
+                    saltenv=saltenv)['stdout']
 
 
 def symbolic_ref(cwd,
                  ref,
                  value=None,
                  opts='',
+                 git_opts='',
                  user=None,
+                 password=None,
                  ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
@@ -3401,9 +4295,26 @@ def symbolic_ref(cwd,
     opts
         Any additional options to add to the command line, in a single string
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``symbolic-refs`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3426,7 +4337,8 @@ def symbolic_ref(cwd,
         salt myminion git.symbolic_ref /path/to/repo FOO opts='--delete'
     '''
     cwd = _expand_path(cwd, user)
-    command = ['git', 'symbolic-ref']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.append('symbolic-ref')
     opts = _format_opts(opts)
     if value is not None and any(x in opts for x in ('-d', '--delete')):
         raise SaltInvocationError(
@@ -3439,7 +4351,8 @@ def symbolic_ref(cwd,
         command.extend(value)
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
@@ -3500,7 +4413,9 @@ def worktree_add(cwd,
                  force=None,
                  detach=False,
                  opts='',
+                 git_opts='',
                  user=None,
+                 password=None,
                  ignore_retcode=False,
                  **kwargs):
     '''
@@ -3551,9 +4466,26 @@ def worktree_add(cwd,
             argument is unnecessary unless new CLI arguments are added to
             `git-worktree(1)`_ and are not yet supported in Salt.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``worktree`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3572,10 +4504,10 @@ def worktree_add(cwd,
         salt myminion git.worktree_add /path/to/repo/main ../hotfix branch=hotfix21 ref=v2.1.9.3
     '''
     _check_worktree_support()
-    kwargs = salt.utils.clean_kwargs(**kwargs)
+    kwargs = salt.utils.args.clean_kwargs(**kwargs)
     branch_ = kwargs.pop('branch', None)
     if kwargs:
-        salt.utils.invalid_kwargs(kwargs)
+        salt.utils.args.invalid_kwargs(kwargs)
 
     cwd = _expand_path(cwd, user)
     if branch_ and detach:
@@ -3583,7 +4515,8 @@ def worktree_add(cwd,
             'Only one of \'branch\' and \'detach\' is allowed'
         )
 
-    command = ['git', 'worktree', 'add']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.extend(['worktree', 'add'])
     if detach:
         if force:
             log.warning(
@@ -3608,7 +4541,8 @@ def worktree_add(cwd,
     # Checkout message goes to stderr
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode,
                     redirect_stderr=True)['stdout']
 
@@ -3618,7 +4552,9 @@ def worktree_prune(cwd,
                    verbose=True,
                    expire=None,
                    opts='',
+                   git_opts='',
                    user=None,
+                   password=None,
                    ignore_retcode=False):
     '''
     .. versionadded:: 2015.8.0
@@ -3655,9 +4591,26 @@ def worktree_prune(cwd,
             argument is unnecessary unless new CLI arguments are added to
             `git-worktree(1)`_ and are not yet supported in Salt.
 
+    git_opts
+        Any additional options to add to git command itself (not the
+        ``worktree`` subcommand), in a single string. This is useful for
+        passing ``-c`` to run git with temporary changes to the git
+        configuration.
+
+        .. versionadded:: 2017.7.0
+
+        .. note::
+            This is only supported in git 1.7.2 and newer.
+
     user
         User under which to run the git command. By default, the command is run
         by the user under which the minion is running.
+
+    password
+        Windows only. Required when specifying ``user``. This parameter will be
+        ignored on non-Windows platforms.
+
+      .. versionadded:: 2016.3.4
 
     ignore_retcode : False
         If ``True``, do not log an error to the minion log if the git command
@@ -3679,7 +4632,8 @@ def worktree_prune(cwd,
     '''
     _check_worktree_support()
     cwd = _expand_path(cwd, user)
-    command = ['git', 'worktree', 'prune']
+    command = ['git'] + _format_git_opts(git_opts)
+    command.extend(['worktree', 'prune'])
     if dry_run:
         command.append('--dry-run')
     if verbose:
@@ -3691,7 +4645,8 @@ def worktree_prune(cwd,
     command.extend(_format_opts(opts))
     return _git_run(command,
                     cwd=cwd,
-                    runas=user,
+                    user=user,
+                    password=password,
                     ignore_retcode=ignore_retcode)['stdout']
 
 
@@ -3714,8 +4669,11 @@ def worktree_rm(cwd, user=None):
         Path to the worktree to be removed
 
     user
-        User under which to run the git command. By default, the command is run
-        by the user under which the minion is running.
+        Used for path expansion when ``cwd`` is not an absolute path. By
+        default, when ``cwd`` is not absolute, the path will be assumed to be
+        relative to the home directory of the user under which the minion is
+        running. Setting this option will change the home directory from which
+        path expansion is performed.
 
 
     CLI Examples:
@@ -3731,7 +4689,7 @@ def worktree_rm(cwd, user=None):
     elif not is_worktree(cwd):
         raise CommandExecutionError(cwd + ' is not a git worktree')
     try:
-        salt.utils.rm_rf(cwd)
+        salt.utils.files.rm_rf(cwd)
     except Exception as exc:
         raise CommandExecutionError(
             'Unable to remove {0}: {1}'.format(cwd, exc)

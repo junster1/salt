@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''
-Use the :doc:`Salt Event System </topics/event/index>` to fire events from the
+Use the :ref:`Salt Event System <events>` to fire events from the
 master to the minion and vice-versa.
 '''
 from __future__ import absolute_import
@@ -14,9 +14,10 @@ import traceback
 # Import salt libs
 import salt.crypt
 import salt.utils.event
+import salt.utils.zeromq
 import salt.payload
 import salt.transport
-import salt.ext.six as six
+from salt.ext import six
 
 __proxyenabled__ = ['*']
 log = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ def fire_master(data, tag, preload=None):
 
         salt '*' event.fire_master '{"data":"my event data"}' 'tag'
     '''
-    if __opts__['local']:
+    if (__opts__.get('local', None) or __opts__.get('file_client', None) == 'local') and not __opts__.get('use_master_when_local', False):
         #  We can't send an event if we're in masterless mode
         log.warning('Local mode detected. Event with tag {0} will NOT be sent.'.format(tag))
         return False
@@ -60,9 +61,16 @@ def fire_master(data, tag, preload=None):
         # slower because it has to independently authenticate)
         if 'master_uri' not in __opts__:
             __opts__['master_uri'] = 'tcp://{ip}:{port}'.format(
-                    ip=salt.utils.ip_bracket(__opts__['interface']),
+                    ip=salt.utils.zeromq.ip_bracket(__opts__['interface']),
                     port=__opts__.get('ret_port', '4506')  # TODO, no fallback
                     )
+        masters = list()
+        ret = True
+        if 'master_uri_list' in __opts__:
+            for master_uri in __opts__['master_uri_list']:
+                masters.append(master_uri)
+        else:
+            masters.append(__opts__['master_uri'])
         auth = salt.crypt.SAuth(__opts__)
         load = {'id': __opts__['id'],
                 'tag': tag,
@@ -73,12 +81,13 @@ def fire_master(data, tag, preload=None):
         if isinstance(preload, dict):
             load.update(preload)
 
-        channel = salt.transport.Channel.factory(__opts__)
-        try:
-            channel.send(load)
-        except Exception:
-            pass
-        return True
+        for master in masters:
+            channel = salt.transport.Channel.factory(__opts__, master_uri=master)
+            try:
+                channel.send(load)
+            except Exception:
+                ret = False
+        return ret
     else:
         # Usually, we can send the event via the minion, which is faster
         # because it is already authenticated
@@ -123,6 +132,7 @@ def send(tag,
         with_env=False,
         with_grains=False,
         with_pillar=False,
+        with_env_opts=False,
         **kwargs):
     '''
     Send an event to the Salt Master
@@ -160,6 +170,11 @@ def send(tag,
     :type with_pillar: Specify ``True`` to include all Pillar values, or
         specify a list of strings of Pillar keys to include. It is a
         best-practice to only specify a relevant subset of Pillar data.
+
+    :param with_env_opts: Include ``saltenv`` and ``pillarenv`` set on minion
+        at the moment when event is send into event data.
+    :type with_env_opts: Specify ``True`` to include ``saltenv`` and
+        ``pillarenv`` values or ``False`` to omit them.
 
     :param kwargs: Any additional keyword arguments passed to this function
         will be interpreted as key-value pairs and included in the event data.
@@ -209,6 +224,10 @@ def send(tag,
         else:
             data_dict['pillar'] = __pillar__
 
+    if with_env_opts:
+        data_dict['saltenv'] = __opts__.get('environment', 'base')
+        data_dict['pillarenv'] = __opts__.get('pillarenv')
+
     if kwargs:
         data_dict.update(kwargs)
 
@@ -216,4 +235,7 @@ def send(tag,
     if isinstance(data, collections.Mapping):
         data_dict.update(data)
 
-    return fire_master(data_dict, tag, preload=preload)
+    if __opts__.get('local') or __opts__.get('file_client') == 'local' or __opts__.get('master_type') == 'disable':
+        return fire(data_dict, tag)
+    else:
+        return fire_master(data_dict, tag, preload=preload)

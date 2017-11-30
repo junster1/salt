@@ -1,3 +1,5 @@
+.. _ref-cli-salt:
+
 ========
 ``salt``
 ========
@@ -56,7 +58,7 @@ Options
 
     Execute the routine on a random subset of the targeted minions.  The
     minions will be verified that they have the named function before
-    executing.
+    executing. The SUBSET argument is the count of the minions to target.
 
 .. option:: -v VERBOSE, --verbose
 
@@ -79,7 +81,7 @@ Options
 
     Pass in an external authentication medium to validate against. The
     credentials will be prompted for. The options are `auto`,
-    `keystone`, `ldap`, `pam`, and `stormpath`. Can be used with the -T
+    `keystone`, `ldap`, and `pam`. Can be used with the -T
     option.
 
 .. option:: -T, --make-token

@@ -10,15 +10,17 @@ import logging
 import re
 
 # Import salt libs
-import salt.utils
-import salt.utils.decorators as decorators
+import salt.utils.files
+import salt.utils.path
+import salt.utils.platform
 
 # Solve the Chicken and egg problem where grains need to run before any
 # of the modules are loaded and are generally available for any usage.
 import salt.modules.cmdmod
 
 __salt__ = {
-    'cmd.run': salt.modules.cmdmod._run_quiet
+    'cmd.run': salt.modules.cmdmod._run_quiet,
+    'cmd.run_all': salt.modules.cmdmod._run_all_quiet
 }
 
 log = logging.getLogger(__name__)
@@ -28,113 +30,154 @@ def disks():
     '''
     Return list of disk devices
     '''
-    if salt.utils.is_freebsd():
-        return _freebsd_disks()
-    elif salt.utils.is_linux():
-        return {'SSDs': _linux_ssds()}
+    if salt.utils.platform.is_freebsd():
+        return _freebsd_geom()
+    elif salt.utils.platform.is_linux():
+        return _linux_disks()
+    elif salt.utils.platform.is_windows():
+        return _windows_disks()
     else:
         log.trace('Disk grain does not support OS')
 
 
-def _clean_keys(key):
-    key = key.replace(' ', '_')
-    key = key.replace('(', '')
-    key = key.replace(')', '')
-    return key
+class _geomconsts(object):
+    GEOMNAME = 'Geom name'
+    MEDIASIZE = 'Mediasize'
+    SECTORSIZE = 'Sectorsize'
+    STRIPESIZE = 'Stripesize'
+    STRIPEOFFSET = 'Stripeoffset'
+    DESCR = 'descr'  # model
+    LUNID = 'lunid'
+    LUNNAME = 'lunname'
+    IDENT = 'ident'  # serial
+    ROTATIONRATE = 'rotationrate'  # RPM or 0 for non-rotating
+
+    # Preserve the API where possible with Salt < 2016.3
+    _aliases = {
+        DESCR: 'device_model',
+        IDENT: 'serial_number',
+        ROTATIONRATE: 'media_RPM',
+        LUNID: 'WWN',
+    }
+
+    _datatypes = {
+        MEDIASIZE: ('re_int', r'(\d+)'),
+        SECTORSIZE: 'try_int',
+        STRIPESIZE: 'try_int',
+        STRIPEOFFSET: 'try_int',
+        ROTATIONRATE: 'try_int',
+    }
 
 
-class _camconsts(object):
-    PROTOCOL = 'protocol'
-    DEVICE_MODEL = 'device model'
-    FIRMWARE_REVISION = 'firmware revision'
-    SERIAL_NUMBER = 'serial number'
-    WWN = 'WWN'
-    SECTOR_SIZE = 'sector size'
-    MEDIA_RPM = 'media RPM'
-
-_identify_attribs = [_camconsts.__dict__[key] for key in
-                     _camconsts.__dict__ if not key.startswith('__')]
-
-
-@decorators.memoize
-def _freebsd_vbox():
-    # Don't tickle VirtualBox storage emulation bugs
-    camcontrol = salt.utils.which('camcontrol')
-    devlist = __salt__['cmd.run']('{0} devlist'.format(camcontrol))
-    if 'VBOX' in devlist:
-        return True
-    return False
+def _datavalue(datatype, data):
+    if datatype == 'try_int':
+        try:
+            return int(data)
+        except ValueError:
+            return None
+    elif datatype is tuple and datatype[0] == 're_int':
+        search = re.search(datatype[1], data)
+        if search:
+            try:
+                return int(search.group(1))
+            except ValueError:
+                return None
+        return None
+    else:
+        return data
 
 
-def _freebsd_disks():
+_geom_attribs = [_geomconsts.__dict__[key] for key in
+                 _geomconsts.__dict__ if not key.startswith('_')]
+
+
+def _freebsd_geom():
+    geom = salt.utils.path.which('geom')
     ret = {'disks': {}, 'SSDs': []}
-    sysctl = salt.utils.which('sysctl')
-    devices = __salt__['cmd.run']('{0} -n kern.disks'.format(sysctl))
-    SSD_TOKEN = 'non-rotating'
 
-    for device in devices.split(' '):
-        if device.startswith('cd'):
-            log.debug('Disk grain skipping cd')
-        elif _freebsd_vbox():
-            log.debug('Disk grain skipping CAM identify/inquirty on VBOX')
-            ret['disks'][device] = {}
-        else:
-            cam = _freebsd_camcontrol(device)
-            ret['disks'][device] = cam
-            if cam.get(_clean_keys(_camconsts.MEDIA_RPM)) == SSD_TOKEN:
-                ret['SSDs'].append(device)
+    devices = __salt__['cmd.run']('{0} disk list'.format(geom))
+    devices = devices.split('\n\n')
 
-    return ret
+    def parse_geom_attribs(device):
+        tmp = {}
+        for line in device.split('\n'):
+            for attrib in _geom_attribs:
+                search = re.search(r'{0}:\s(.*)'.format(attrib), line)
+                if search:
+                    value = _datavalue(_geomconsts._datatypes.get(attrib),
+                                       search.group(1))
+                    tmp[attrib] = value
+                    if attrib in _geomconsts._aliases:
+                        tmp[_geomconsts._aliases[attrib]] = value
 
+        name = tmp.pop(_geomconsts.GEOMNAME)
+        if name.startswith('cd'):
+            return
 
-def _freebsd_camcontrol(device):
-    camcontrol = salt.utils.which('camcontrol')
-    ret = {}
+        ret['disks'][name] = tmp
+        if tmp.get(_geomconsts.ROTATIONRATE) == 0:
+            log.trace('Device {0} reports itself as an SSD'.format(device))
+            ret['SSDs'].append(name)
 
-    def parse_identify_attribs(line):
-        for attrib in _identify_attribs:
-            search = re.search(r'^{0}\s+(.*)'.format(attrib), line)
-            if search:
-                ret[_clean_keys(attrib)] = search.group(1)
-
-    identify = __salt__['cmd.run']('{0} identify {1}'.format(camcontrol,
-                                                             device))
-    for line in identify.splitlines():
-        parse_identify_attribs(line)
-
-    def parse_inquiry(inquiry):
-        if not ret.get(_clean_keys(_camconsts.DEVICE_MODEL)):
-            model = re.search(r'\s<(.+?)>', inquiry)
-            if model:
-                ret[_clean_keys(_camconsts.DEVICE_MODEL)] = model.group(1)
-        if not ret.get(_clean_keys(_camconsts.SERIAL_NUMBER)):
-            sn = re.search(r'\sSerial Number\s+(\w+)\s', inquiry)
-            if sn:
-                ret[_clean_keys(_camconsts.SERIAL_NUMBER)] = sn.group(1)
-
-    inquiry = __salt__['cmd.run']('{0} inquiry {1}'.format(camcontrol, device))
-    parse_inquiry(inquiry)
+    for device in devices:
+        parse_geom_attribs(device)
 
     return ret
 
 
-def _linux_ssds():
+def _linux_disks():
     '''
-    Return list of disk devices that are SSD (non-rotational)
+    Return list of disk devices and work out if they are SSD or HDD.
     '''
-    ssd_devices = []
+    ret = {'disks': [], 'SSDs': []}
 
     for entry in glob.glob('/sys/block/*/queue/rotational'):
-        with salt.utils.fopen(entry) as entry_fp:
+        with salt.utils.files.fopen(entry) as entry_fp:
             device = entry.split('/')[3]
             flag = entry_fp.read(1)
             if flag == '0':
-                ssd_devices.append(device)
+                ret['SSDs'].append(device)
                 log.trace('Device {0} reports itself as an SSD'.format(device))
             elif flag == '1':
-                log.trace('Device {0} does not report itself as an SSD'
-                          .format(device))
+                ret['disks'].append(device)
+                log.trace('Device {0} reports itself as an HDD'.format(device))
             else:
-                log.trace('Unable to identify device {0} as an SSD or not.'
+                log.trace('Unable to identify device {0} as an SSD or HDD.'
                           ' It does not report 0 or 1'.format(device))
-    return ssd_devices
+    return ret
+
+
+def _windows_disks():
+    wmic = salt.utils.path.which('wmic')
+
+    namespace = r'\\root\microsoft\windows\storage'
+    path = 'MSFT_PhysicalDisk'
+    where = '(MediaType=3 or MediaType=4)'
+    get = 'DeviceID,MediaType'
+
+    ret = {'disks': [], 'SSDs': []}
+
+    cmdret = __salt__['cmd.run_all'](
+        '{0} /namespace:{1} path {2} where {3} get {4} /format:table'.format(
+            wmic, namespace, path, where, get))
+
+    if cmdret['retcode'] != 0:
+        log.trace('Disk grain does not support this version of Windows')
+    else:
+        for line in cmdret['stdout'].splitlines():
+            info = line.split()
+            if len(info) != 2 or not info[0].isdigit() or not info[1].isdigit():
+                continue
+            device = r'\\.\PhysicalDrive{0}'.format(info[0])
+            mediatype = info[1]
+            if mediatype == '3':
+                log.trace('Device {0} reports itself as an HDD'.format(device))
+                ret['disks'].append(device)
+            elif mediatype == '4':
+                log.trace('Device {0} reports itself as an SSD'.format(device))
+                ret['SSDs'].append(device)
+            else:
+                log.trace('Unable to identify device {0} as an SSD or HDD.'
+                          'It does not report 3 or 4'.format(device))
+
+    return ret

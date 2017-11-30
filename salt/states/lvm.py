@@ -27,14 +27,15 @@ from __future__ import absolute_import
 import os
 
 # Import salt libs
-import salt.utils
+import salt.utils.path
+from salt.ext import six
 
 
 def __virtual__():
     '''
     Only load the module if lvm is installed
     '''
-    if salt.utils.which('lvm'):
+    if salt.utils.path.which('lvm'):
         return 'lvm'
     return False
 
@@ -121,20 +122,22 @@ def vg_present(name, devices=None, **kwargs):
            'comment': '',
            'name': name,
            'result': True}
+    if isinstance(devices, six.string_types):
+        devices = devices.split(',')
 
     if __salt__['lvm.vgdisplay'](name):
         ret['comment'] = 'Volume Group {0} already present'.format(name)
-        for device in devices.split(','):
+        for device in devices:
             realdev = os.path.realpath(device)
-            pvs = __salt__['lvm.pvdisplay'](realdev)
+            pvs = __salt__['lvm.pvdisplay'](realdev, real=True)
             if pvs and pvs.get(realdev, None):
                 if pvs[realdev]['Volume Group Name'] == name:
                     ret['comment'] = '{0}\n{1}'.format(
                         ret['comment'],
                         '{0} is part of Volume Group'.format(device))
-                elif pvs[realdev]['Volume Group Name'] == '#orphans_lvm2':
-                    __salt__['lvm.vgextend'](name, realdev)
-                    pvs = __salt__['lvm.pvdisplay'](realdev)
+                elif pvs[realdev]['Volume Group Name'] in ['', '#orphans_lvm2']:
+                    __salt__['lvm.vgextend'](name, device)
+                    pvs = __salt__['lvm.pvdisplay'](realdev, real=True)
                     if pvs[realdev]['Volume Group Name'] == name:
                         ret['changes'].update(
                             {device: 'added to {0}'.format(name)})
@@ -206,6 +209,9 @@ def lv_present(name,
                extents=None,
                snapshot=None,
                pv='',
+               thinvolume=False,
+               thinpool=False,
+               force=False,
                **kwargs):
     '''
     Create a new logical volume
@@ -231,6 +237,20 @@ def lv_present(name,
     kwargs
         Any supported options to lvcreate. See
         :mod:`linux_lvm <salt.modules.linux_lvm>` for more details.
+
+    .. versionadded:: to_complete
+
+    thinvolume
+        Logical volume is thinly provisioned
+
+    thinpool
+        Logical volume is a thin pool
+
+    .. versionadded:: Oxygen
+
+    force
+        Assume yes to all prompts
+
     '''
     ret = {'changes': {},
            'comment': '',
@@ -243,9 +263,12 @@ def lv_present(name,
         _snapshot = name
         name = snapshot
 
-    lvpath = '/dev/{0}/{1}'.format(vgname, name)
+    if thinvolume:
+        lvpath = '/dev/{0}/{1}'.format(vgname.split('/')[0], name)
+    else:
+        lvpath = '/dev/{0}/{1}'.format(vgname, name)
 
-    if __salt__['lvm.lvdisplay'](lvpath):
+    if __salt__['lvm.lvdisplay'](lvpath, quiet=True):
         ret['comment'] = 'Logical Volume {0} already present'.format(name)
     elif __opts__['test']:
         ret['comment'] = 'Logical Volume {0} is set to be created'.format(name)
@@ -258,13 +281,16 @@ def lv_present(name,
                                            extents=extents,
                                            snapshot=_snapshot,
                                            pv=pv,
+                                           thinvolume=thinvolume,
+                                           thinpool=thinpool,
+                                           force=force,
                                            **kwargs)
 
         if __salt__['lvm.lvdisplay'](lvpath):
             ret['comment'] = 'Created Logical Volume {0}'.format(name)
             ret['changes']['created'] = changes
         else:
-            ret['comment'] = 'Failed to create Logical Volume {0}'.format(name)
+            ret['comment'] = 'Failed to create Logical Volume {0}. Error: {1}'.format(name, changes)
             ret['result'] = False
     return ret
 

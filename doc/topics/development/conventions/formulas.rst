@@ -37,7 +37,8 @@ Adding a Formula as a GitFS remote
 One design goal of Salt's GitFS fileserver backend was to facilitate reusable
 States. GitFS is a quick and natural way to use Formulas.
 
-1.  :ref:`Install and configure GitFS <tutorial-gitfs>`.
+1.  :ref:`Install any necessary dependencies and configure GitFS
+    <tutorial-gitfs>`.
 
 2.  Add one or more Formula repository URLs as remotes in the
     :conf_master:`gitfs_remotes` list in the Salt Master configuration file:
@@ -56,6 +57,13 @@ States. GitFS is a quick and natural way to use Formulas.
     upstream with a quick pull request!
 
 3.  Restart the Salt master.
+
+Beginning with the Oxygen release, using formulas with GitFS is now much more
+convenient for deployments which use many different fileserver environments
+(i.e. saltenvs). Using the :ref:`all_saltenvs <gitfs-global-remotes>`
+parameter, files from a single git branch/tag will appear in all environments.
+See :ref:`here <gitfs-global-remotes>` for more information on this feature.
+
 
 Adding a Formula directory manually
 -----------------------------------
@@ -206,18 +214,34 @@ Writing Formulas
 Each Formula is a separate repository in the `saltstack-formulas`_ organization
 on GitHub.
 
-.. note:: Get involved creating new Formulas
+Get involved creating new Formulas
+----------------------------------
 
-    The best way to create new Formula repositories for now is to create a
-    repository in your own account on GitHub and notify a SaltStack employee
-    when it is ready. We will add you to the contributors team on the
-    `saltstack-formulas`_ organization and help you transfer the repository
-    over. Ping a SaltStack employee on IRC (``#salt`` on Freenode) or send an
-    email to the `salt-users`_ mailing list.
+The best way to create new Formula repositories for now is to create a
+repository in your own account on GitHub and notify a SaltStack employee when
+it is ready. We will add you to the Contributors team on the
+`saltstack-formulas`_ organization and help you transfer the repository over.
+Ping a SaltStack employee on IRC (``#salt`` on Freenode) or send an email to
+the `salt-users`_ mailing list.
 
-    There are a lot of repositories in that organization! Team members can
-    manage which repositories they are subscribed to on GitHub's watching page:
-    https://github.com/watching.
+There are a lot of repositories in that organization! Team members can manage
+which repositories they are subscribed to on GitHub's watching page:
+https://github.com/watching.
+
+Members of the Contributors team are welcome to participate in reviewing pull
+requests across the Organization. Some repositories will have regular
+contributors and some repositories will not. As you get involved in a
+repository be sure to communicate with any other contributors there on pull
+requests that are large or have breaking changes.
+
+In general it is best to have another Contributor review and merge any pull
+requests that you open. Feel free to `at-mention`__ other regular contributors
+to a repository and request a review. However, there are a lot of formula
+repositories so if a repository does not yet have regular contributors or if
+your pull request has stayed open for more than a couple days feel free to
+"selfie-merge" your own pull request.
+
+__: https://help.github.com/articles/basic-writing-and-formatting-syntax/#mentioning-users-and-teams
 
 Style
 -----
@@ -367,7 +391,8 @@ variables or interact.
   for :ref:`any of the alternate renderers <all-salt.renderers>` in Salt.)
 * Highstate can be thought of as a human-friendly data structure; easy to write
   and easy to read.
-* Salt's state compiler validates the highstate and compiles it to low state.
+* Salt's state compiler validates the :ref:`highstate <running-highstate>` and
+  compiles it to low state.
 * Low state can be thought of as a machine-friendly data structure. It is a
   list of dictionaries that each map directly to a function call.
 * Salt's state system finally starts and executes on each "chunk" in the low
@@ -415,9 +440,9 @@ from the Salt Master. For example:
     {% set some_data = salt.pillar.get('some_data', {'sane default': True}) %}
 
     {# or #}
-    
+
     {% import_yaml 'path/to/file.yaml' as some_data %}
-    
+
     {# or #}
 
     {% import_json 'path/to/file.json' as some_data %}
@@ -436,7 +461,7 @@ data from the state that will make use of the data.
 Light conditionals and looping
 ``````````````````````````````
 
-Jinja is extremely powerful for programatically generating Salt states. It is
+Jinja is extremely powerful for programmatically generating Salt states. It is
 also easy to overuse. As a rule of thumb, if it is hard to read it will be hard
 to maintain!
 
@@ -460,7 +485,7 @@ Below is a simple example of a readable loop:
 
 Avoid putting a Jinja conditionals within Salt states where possible.
 Readability suffers and the correct YAML indentation is difficult to see in the
-surrounding visual noise. Parameterization (discussed below) and variables are
+surrounding visual noise. Parametrization (discussed below) and variables are
 both useful techniques to avoid this. For example:
 
 .. code-block:: yaml
@@ -499,7 +524,7 @@ both useful techniques to avoid this. For example:
         - name: {{ name }}
 
 Dictionaries are useful to effectively "namespace" a collection of variables.
-This is useful with parameterization (discussed below). Dictionaries are also
+This is useful with parametrization (discussed below). Dictionaries are also
 easily combined and merged. And they can be directly serialized into YAML which
 is often easier than trying to create valid YAML through templating. For
 example:
@@ -581,7 +606,7 @@ read it will be hard to maintain -- switch to a format that is easier to read.
 Using alternate renderers is very simple to do using Salt's "she-bang" syntax
 at the top of the file. The Python renderer must simply return the correct
 :ref:`highstate data structure <states-highstate-example>`. The following
-example is a state tree of two sls files, one simple and one complicated. 
+example is a state tree of two sls files, one simple and one complicated.
 
 ``/srv/salt/top.sls``:
 
@@ -777,13 +802,27 @@ state file using the following syntax:
       service.running:
         - name: {{ mysql.service }}
 
+Organizing Pillar data
+``````````````````````
+
+It is considered a best practice to make formulas expect **all**
+formula-related parameters to be placed under second-level ``lookup`` key,
+within a main namespace designated for holding data for particular
+service/software/etc, managed by the formula:
+
+.. code-block:: yaml
+
+    mysql:
+      lookup:
+        version: 5.7.11
+
 Collecting common values
 ````````````````````````
 
 Common values can be collected into a *base* dictionary.  This
 minimizes repetition of identical values in each of the
 ``lookup_dict`` sub-dictionaries.  Now only the values that are
-different from the base must be specified of the alternates:
+different from the base must be specified by the alternates:
 
 :file:`map.jinja`:
 
@@ -811,7 +850,7 @@ different from the base must be specified of the alternates:
             'python': 'dev-python/mysql-python',
         },
     },
-    merge=salt['pillar.get']('mysql:lookup'), default='default') %}
+    merge=salt['pillar.get']('mysql:lookup'), base='default') %}
 
 
 Overriding values in the lookup table
@@ -951,7 +990,7 @@ XML.)
 
     {% import_yaml 'tomcat/defaults.yaml' as server_xml_defaults %}
     {% set server_xml_final_values = salt.pillar.get(
-        'appX:server_xml_overrides', 
+        'appX:server_xml_overrides',
         default=server_xml_defaults,
         merge=True)
     %}
@@ -1147,7 +1186,7 @@ Pillar overrides
 
 Pillar lookups must use the safe :py:func:`~salt.modules.pillar.get`
 and must provide a default value. Create local variables using the Jinja
-``set`` construct to increase redability and to avoid potentially hundreds or
+``set`` construct to increase readability and to avoid potentially hundreds or
 thousands of function calls across a large state tree.
 
 .. code-block:: jinja
@@ -1302,9 +1341,9 @@ structure can be performed by with the :py:func:`state.show_sls
     salt '*' state.show_sls apache
 
 Salt Formulas can then be tested by running each ``.sls`` file via
-:py:func:`state.sls <salt.modules.state.sls>` and checking the output for the
-success or failure of each state in the Formula. This should be done for each
-supported platform.
+:py:func:`state.apply <salt.modules.state.apply_>` and checking the output for
+the success or failure of each state in the Formula. This should be done for
+each supported platform.
 
 .. ............................................................................
 

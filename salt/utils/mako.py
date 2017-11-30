@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+'''
+Functions for working with Mako templates
+'''
 from __future__ import absolute_import
 
 # Import python libs
@@ -9,7 +12,7 @@ import urlparse
 # pylint: disable=import-error,no-name-in-module
 from salt.ext.six.moves.urllib.parse import urlparse
 # pylint: enable=import-error,no-name-in-module
-from mako.lookup import TemplateCollection, TemplateLookup  # pylint: disable=import-error
+from mako.lookup import TemplateCollection, TemplateLookup  # pylint: disable=import-error,3rd-party-module-not-gated
 
 # Import salt libs
 import salt.fileclient
@@ -44,16 +47,7 @@ class SaltMakoTemplateLookup(TemplateCollection):
 
     """
 
-    def __init__(self, opts, saltenv='base', env=None, pillar_rend=False):
-        if env is not None:
-            salt.utils.warn_until(
-                'Boron',
-                'Passing a salt environment should be done using \'saltenv\' '
-                'not \'env\'. This functionality will be removed in Salt '
-                'Boron.'
-            )
-            # Backwards compatibility
-            saltenv = env
+    def __init__(self, opts, saltenv='base', pillar_rend=False):
         self.opts = opts
         self.saltenv = saltenv
         self._file_client = None

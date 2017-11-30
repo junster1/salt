@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 Manage groups on Linux, OpenBSD and NetBSD
+
+.. important::
+    If you feel that Salt should be using this module to manage groups on a
+    minion, and it is using a different module (or gives an error similar to
+    *'group.info' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 
 # Import python libs
@@ -25,7 +31,7 @@ def __virtual__():
     if __grains__['kernel'] in ('Linux', 'OpenBSD', 'NetBSD'):
         return __virtualname__
     return (False, 'The groupadd execution module cannot be loaded: '
-      ' only available on Linux, OpenBSD and NetBSD')
+            ' only available on Linux, OpenBSD and NetBSD')
 
 
 def add(name, gid=None, system=False, root=None):
@@ -38,12 +44,12 @@ def add(name, gid=None, system=False, root=None):
 
         salt '*' group.add foo 3456
     '''
-    cmd = 'groupadd '
+    cmd = ['groupadd']
     if gid:
-        cmd += '-g {0} '.format(gid)
+        cmd.append('-g {0}'.format(gid))
     if system and __grains__['kernel'] != 'OpenBSD':
-        cmd += '-r '
-    cmd += name
+        cmd.append('-r')
+    cmd.append(name)
 
     if root is not None:
         cmd.extend(('-R', root))
@@ -63,7 +69,7 @@ def delete(name, root=None):
 
         salt '*' group.delete foo
     '''
-    cmd = ('groupdel', name)
+    cmd = ['groupdel', name]
 
     if root is not None:
         cmd.extend(('-R', root))
@@ -134,7 +140,7 @@ def chgid(name, gid, root=None):
     pre_gid = __salt__['file.group_to_gid'](name)
     if gid == pre_gid:
         return True
-    cmd = ('groupmod', '-g', gid, name)
+    cmd = ['groupmod', '-g', gid, name]
 
     if root is not None:
         cmd.extend(('-R', root))
@@ -160,16 +166,19 @@ def adduser(name, username, root=None):
     if not then adds it.
     '''
     on_redhat_5 = __grains__.get('os_family') == 'RedHat' and __grains__.get('osmajorrelease') == '5'
+    on_suse_11 = __grains__.get('os_family') == 'Suse' and __grains__.get('osmajorrelease') == '11'
 
     if __grains__['kernel'] == 'Linux':
         if on_redhat_5:
-            cmd = ('gpasswd', '-a', username, name)
+            cmd = ['gpasswd', '-a', username, name]
+        elif on_suse_11:
+            cmd = ['usermod', '-A', name, username]
         else:
-            cmd = ('gpasswd', '--add', username, name)
+            cmd = ['gpasswd', '--add', username, name]
         if root is not None:
             cmd.extend(('-Q', root))
     else:
-        cmd = ('usermod', '-G', name, username)
+        cmd = ['usermod', '-G', name, username]
         if root is not None:
             cmd.extend(('-R', root))
 
@@ -192,24 +201,27 @@ def deluser(name, username, root=None):
     then returns True.
     '''
     on_redhat_5 = __grains__.get('os_family') == 'RedHat' and __grains__.get('osmajorrelease') == '5'
+    on_suse_11 = __grains__.get('os_family') == 'Suse' and __grains__.get('osmajorrelease') == '11'
 
     grp_info = __salt__['group.info'](name)
     try:
         if username in grp_info['members']:
             if __grains__['kernel'] == 'Linux':
                 if on_redhat_5:
-                    cmd = ('gpasswd', '-d', username, name)
+                    cmd = ['gpasswd', '-d', username, name]
+                elif on_suse_11:
+                    cmd = ['usermod', '-R', name, username]
                 else:
-                    cmd = ('gpasswd', '--del', username, name)
+                    cmd = ['gpasswd', '--del', username, name]
                 if root is not None:
                     cmd.extend(('-R', root))
                 retcode = __salt__['cmd.retcode'](cmd, python_shell=False)
             elif __grains__['kernel'] == 'OpenBSD':
                 out = __salt__['cmd.run_stdout']('id -Gn {0}'.format(username),
                                                  python_shell=False)
-                cmd = 'usermod -S '
-                cmd += ','.join([g for g in out.split() if g != str(name)])
-                cmd += ' {0}'.format(username)
+                cmd = ['usermod', '-S']
+                cmd.append(','.join([g for g in out.split() if g != str(name)]))
+                cmd.append('{0}'.format(username))
                 retcode = __salt__['cmd.retcode'](cmd, python_shell=False)
             else:
                 log.error('group.deluser is not yet supported on this platform')
@@ -233,12 +245,17 @@ def members(name, members_list, root=None):
         foo:x:1234:user1,user2,user3,...
     '''
     on_redhat_5 = __grains__.get('os_family') == 'RedHat' and __grains__.get('osmajorrelease') == '5'
+    on_suse_11 = __grains__.get('os_family') == 'Suse' and __grains__.get('osmajorrelease') == '11'
 
     if __grains__['kernel'] == 'Linux':
         if on_redhat_5:
-            cmd = ('gpasswd', '-M', members_list, name)
+            cmd = ['gpasswd', '-M', members_list, name]
+        elif on_suse_11:
+            for old_member in __salt__['group.info'](name).get('members'):
+                __salt__['cmd.run']('groupmod -R {0} {1}'.format(old_member, name), python_shell=False)
+            cmd = ['groupmod', '-A', members_list, name]
         else:
-            cmd = ('gpasswd', '--members', members_list, name)
+            cmd = ['gpasswd', '--members', members_list, name]
         if root is not None:
             cmd.extend(('-R', root))
         retcode = __salt__['cmd.retcode'](cmd, python_shell=False)
@@ -253,7 +270,7 @@ def members(name, members_list, root=None):
             for user in members_list.split(","):
                 if user:
                     retcode = __salt__['cmd.retcode'](
-                        'usermod -G {0} {1}'.format(name, user),
+                        ['usermod', '-G', name, user],
                         python_shell=False)
                     if not retcode == 0:
                         break

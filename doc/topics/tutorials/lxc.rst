@@ -7,7 +7,7 @@ LXC Management with Salt
 .. note::
 
     This walkthrough assumes basic knowledge of Salt. To get up to speed, check
-    out the :doc:`Salt Walkthrough </topics/tutorials/walkthrough>`.
+    out the :ref:`Salt Walkthrough <tutorial-salt-walk-through>`.
 
 Dependencies
 ============
@@ -51,7 +51,7 @@ There are two types of profiles:
 Container Profiles
 ------------------
 
-LXC container profiles are defined defined underneath the
+LXC container profiles are defined underneath the
 ``lxc.container_profile`` config option:
 
 .. code-block:: yaml
@@ -219,7 +219,7 @@ container-by-container basis, for instance using the ``nic_opts`` argument to
 .. warning::
 
     The ``ipv4``, ``ipv6``, ``gateway``, and ``link`` (bridge) settings in
-    network profiles / nic_opts will only work if the container doesnt redefine
+    network profiles / nic_opts will only work if the container doesn't redefine
     the network configuration (for example in
     ``/etc/sysconfig/network-scripts/ifcfg-<interface_name>`` on RHEL/CentOS,
     or ``/etc/network/interfaces`` on Debian/Ubuntu/etc.). Use these with

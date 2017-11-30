@@ -1,8 +1,8 @@
 .. _all-salt.auth:
 
-=================================
-Full list of builtin auth modules
-=================================
+============
+auth modules
+============
 
 .. currentmodule:: salt.auth
 
@@ -19,5 +19,4 @@ Full list of builtin auth modules
     pki
     rest
     sharedsecret
-    stormpath
     yubico

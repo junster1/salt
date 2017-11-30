@@ -14,14 +14,15 @@ import logging
 
 # Import Salt libs
 import salt.client
-import salt.utils
-import salt.utils.virt
+import salt.utils.args
 import salt.utils.cloud
+import salt.utils.files
+import salt.utils.virt
 import salt.key
 from salt.utils.odict import OrderedDict as _OrderedDict
 
 # Import 3rd-party lib
-import salt.ext.six as six
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ def find_guest(name, quiet=False, path=None):
         salt-run lxc.find_guest name
     '''
     if quiet:
-        log.warn('\'quiet\' argument is being deprecated.'
+        log.warning("'quiet' argument is being deprecated."
                  ' Please migrate to --quiet')
     for data in _list_iter(path=path):
         host, l = next(six.iteritems(data))
@@ -234,7 +235,7 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
     '''
     path = kwargs.get('path', None)
     if quiet:
-        log.warn('\'quiet\' argument is being deprecated.'
+        log.warning("'quiet' argument is being deprecated."
                  ' Please migrate to --quiet')
     ret = {'comment': '', 'result': True}
     if host is None:
@@ -275,7 +276,7 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
         ret['result'] = False
         return ret
 
-    kw = salt.utils.clean_kwargs(**kwargs)
+    kw = salt.utils.args.clean_kwargs(**kwargs)
     pub_key = kw.get('pub_key', None)
     priv_key = kw.get('priv_key', None)
     explicit_auth = pub_key and priv_key
@@ -308,20 +309,20 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
     cmds = []
     for name in names:
         args = [name]
-        kw = salt.utils.clean_kwargs(**kwargs)
+        kw = salt.utils.args.clean_kwargs(**kwargs)
         if saltcloud_mode:
             kw = copy.deepcopy(kw)
             kw['name'] = name
-            saved_kwargs = {}
+            saved_kwargs = kw
             kw = client.cmd(
                 host, 'lxc.cloud_init_interface', args + [kw],
-                expr_form='list', timeout=600).get(host, {})
+                tgt_type='list', timeout=600).get(host, {})
+            kw.update(saved_kwargs)
         name = kw.pop('name', name)
         # be sure not to seed an already seeded host
         kw['seed'] = seeds.get(name, seed_arg)
         if not kw['seed']:
             kw.pop('seed_cmd', '')
-        kw.update(saved_kwargs)
         cmds.append(
             (host,
              name,
@@ -372,10 +373,10 @@ def init(names, host=None, saltcloud_mode=False, quiet=False, **kwargs):
         if explicit_auth:
             fcontent = ''
             if os.path.exists(key):
-                with salt.utils.fopen(key) as fic:
+                with salt.utils.files.fopen(key) as fic:
                     fcontent = fic.read().strip()
             if pub_key.strip() != fcontent:
-                with salt.utils.fopen(key, 'w') as fic:
+                with salt.utils.files.fopen(key, 'w') as fic:
                     fic.write(pub_key)
                     fic.flush()
         mid = j_ret.get('mid', None)
@@ -424,7 +425,7 @@ def cloud_init(names, host=None, quiet=False, **kwargs):
         init the container with the saltcloud opts format instead
     '''
     if quiet:
-        log.warn('\'quiet\' argument is being deprecated. Please migrate to --quiet')
+        log.warning("'quiet' argument is being deprecated. Please migrate to --quiet")
     return __salt__['lxc.init'](names=names, host=host,
                                 saltcloud_mode=True, quiet=quiet, **kwargs)
 

@@ -1,28 +1,43 @@
 # -*- coding: utf-8 -*-
 '''
-Service support for the REST example
+Package support for the REST example
 '''
 from __future__ import absolute_import
 
-# Import python libs
+# Import Python libs
 import logging
-import salt.utils
+
+# Import Salt libs
+import salt.utils.data
+import salt.utils.platform
 
 
 log = logging.getLogger(__name__)
 
-__proxyenabled__ = ['rest_sample']
 # Define the module's virtual name
 __virtualname__ = 'pkg'
 
 
 def __virtual__():
     '''
-    Only work on proxy
+    Only work on systems that are a proxy minion
     '''
-    if salt.utils.is_proxy():
-        return __virtualname__
-    return (False, 'The rest_package execution module failed to load: only available on proxy minions.')
+    try:
+        if salt.utils.platform.is_proxy() \
+                and __opts__['proxy']['proxytype'] == 'rest_sample':
+            return __virtualname__
+    except KeyError:
+        return (
+            False,
+            'The rest_package execution module failed to load. Check the '
+            'proxy key in pillar.'
+        )
+
+    return (
+        False,
+        'The rest_package execution module failed to load: only works on a '
+        'rest_sample proxy minion.'
+    )
 
 
 def list_pkgs(versions_as_list=False, **kwargs):
@@ -53,6 +68,13 @@ def version(*names, **kwargs):
     '''
     if len(names) == 1:
         return str(__proxy__['rest_sample.package_status'](names[0]))
+
+
+def upgrade(refresh=True, skip_verify=True, **kwargs):
+    old = __proxy__['rest_sample.package_list']()
+    new = __proxy__['rest_sample.uptodate']()
+    pkg_installed = __proxy__['rest_sample.upgrade']()
+    return salt.utils.data.compare_dicts(old, pkg_installed)
 
 
 def installed(

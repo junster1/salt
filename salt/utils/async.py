@@ -62,8 +62,9 @@ class SyncWrapper(object):
     def __getattribute__(self, key):
         try:
             return object.__getattribute__(self, key)
-        except AttributeError:
-            pass
+        except AttributeError as ex:
+            if key == 'async':
+                raise ex
         attr = getattr(self.async, key)
         if hasattr(attr, '__call__'):
             def wrap(*args, **kwargs):
@@ -97,5 +98,7 @@ class SyncWrapper(object):
             # Other things should be deallocated after the io_loop closes.
             # See Issue #26889.
             del self.async
-        else:
+            del self.io_loop
+        elif hasattr(self, 'io_loop'):
             self.io_loop.close()
+            del self.io_loop

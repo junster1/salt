@@ -17,6 +17,7 @@ MANIFEST
 #   top of salt such as
 # - /some/path$ git clone https://github.com/thatch45/salt.git
 # - /some/path$ virtualenv --python=/usr/bin/python2.6 salt
+/env/
 /bin/
 /etc/
 /include/
@@ -65,6 +66,9 @@ tags
 # Allow a user to set their own _version.py for testing
 _version.py
 
+# Ignore auto generated _syspaths.py file
+_syspaths.py
+
 # Ignore grains file written out during tests
 tests/integration/files/conf/grains
 /salt/_syspaths.py
@@ -74,3 +78,21 @@ tests/integration/files/conf/grains
 
 # Ignore file cache created by jinja tests
 tests/unit/templates/roots
+
+# Pycharm
+.idea
+
+# Ignore the log directory created by tests
+/logs
+tests/integration/cloud/providers/logs
+
+# Private keys from the integration tests
+tests/integration/cloud/providers/pki/minions
+
+# Ignore tox virtualenvs
+/.tox/
+
+# Kitchen tests files
+.kitchen/
+.bundle/
+Gemfile.lock

@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 '''
 Manage CloudTrail Objects
-=================
+=========================
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 Create and destroy CloudTrail objects. Be aware that this interacts with Amazon's services,
 and so may incur charges.
 
-This module uses ``boto3``, which can be installed via package, or pip.
+:depends:
+    - boto
+    - boto3
+
+The dependencies listed above can be installed via package or pip.
 
 This module accepts explicit vpc credentials but can also utilize
 IAM roles assigned to the instance through Instance Profiles. Dynamic
@@ -55,7 +59,8 @@ import os
 import os.path
 
 # Import Salt Libs
-import salt.utils
+from salt.ext import six
+import salt.utils.data
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +76,7 @@ def present(name, Name,
            S3BucketName, S3KeyPrefix=None,
            SnsTopicName=None,
            IncludeGlobalServiceEvents=True,
-           #IsMultiRegionTrail=None,
+           IsMultiRegionTrail=None,
            EnableLogFileValidation=False,
            CloudWatchLogsLogGroupArn=None,
            CloudWatchLogsRoleArn=None,
@@ -166,7 +171,7 @@ def present(name, Name,
                    S3KeyPrefix=S3KeyPrefix,
                    SnsTopicName=SnsTopicName,
                    IncludeGlobalServiceEvents=IncludeGlobalServiceEvents,
-                   #IsMultiRegionTrail=IsMultiRegionTrail,
+                   IsMultiRegionTrail=IsMultiRegionTrail,
                    EnableLogFileValidation=EnableLogFileValidation,
                    CloudWatchLogsLogGroupArn=CloudWatchLogsLogGroupArn,
                    CloudWatchLogsRoleArn=CloudWatchLogsRoleArn,
@@ -185,6 +190,11 @@ def present(name, Name,
         if LoggingEnabled:
             r = __salt__['boto_cloudtrail.start_logging'](Name=Name,
                    region=region, key=key, keyid=keyid, profile=profile)
+            if 'error' in r:
+                ret['result'] = False
+                ret['comment'] = 'Failed to create trail: {0}.'.format(r['error']['message'])
+                ret['changes'] = {}
+                return ret
             ret['changes']['new']['trail']['LoggingEnabled'] = True
         else:
             ret['changes']['new']['trail']['LoggingEnabled'] = False
@@ -192,6 +202,11 @@ def present(name, Name,
         if bool(Tags):
             r = __salt__['boto_cloudtrail.add_tags'](Name=Name,
                    region=region, key=key, keyid=keyid, profile=profile, **Tags)
+            if not r.get('tagged'):
+                ret['result'] = False
+                ret['comment'] = 'Failed to create trail: {0}.'.format(r['error']['message'])
+                ret['changes'] = {}
+                return ret
             ret['changes']['new']['trail']['Tags'] = Tags
         return ret
 
@@ -199,23 +214,31 @@ def present(name, Name,
     ret['changes'] = {}
     # trail exists, ensure config matches
     _describe = __salt__['boto_cloudtrail.describe'](Name=Name,
-                                  region=region, key=key, keyid=keyid, profile=profile)['trail']
+                                  region=region, key=key, keyid=keyid, profile=profile)
+    if 'error' in _describe:
+        ret['result'] = False
+        ret['comment'] = 'Failed to update trail: {0}.'.format(_describe['error']['message'])
+        ret['changes'] = {}
+        return ret
+    _describe = _describe.get('trail')
 
     r = __salt__['boto_cloudtrail.status'](Name=Name,
                    region=region, key=key, keyid=keyid, profile=profile)
     _describe['LoggingEnabled'] = r.get('trail', {}).get('IsLogging', False)
 
     need_update = False
-    for invar, outvar in {'S3BucketName': 'S3BucketName',
-                'S3KeyPrefix': 'S3KeyPrefix',
-                'SnsTopicName': 'SnsTopicName',
-                'IncludeGlobalServiceEvents': 'IncludeGlobalServiceEvents',
-                #'IsMultiRegionTrail': 'IsMultiRegionTrail',
-                'EnableLogFileValidation': 'LogFileValidationEnabled',
-                'CloudWatchLogsLogGroupArn': 'CloudWatchLogsLogGroupArn',
-                'CloudWatchLogsRoleArn': 'CloudWatchLogsRoleArn',
-                'KmsKeyId': 'KmsKeyId',
-                'LoggingEnabled': 'LoggingEnabled'}.iteritems():
+    bucket_vars = {'S3BucketName': 'S3BucketName',
+                   'S3KeyPrefix': 'S3KeyPrefix',
+                   'SnsTopicName': 'SnsTopicName',
+                   'IncludeGlobalServiceEvents': 'IncludeGlobalServiceEvents',
+                   'IsMultiRegionTrail': 'IsMultiRegionTrail',
+                   'EnableLogFileValidation': 'LogFileValidationEnabled',
+                   'CloudWatchLogsLogGroupArn': 'CloudWatchLogsLogGroupArn',
+                   'CloudWatchLogsRoleArn': 'CloudWatchLogsRoleArn',
+                   'KmsKeyId': 'KmsKeyId',
+                   'LoggingEnabled': 'LoggingEnabled'}
+
+    for invar, outvar in six.iteritems(bucket_vars):
         if _describe[outvar] != locals()[invar]:
             need_update = True
             ret['changes'].setdefault('new', {})[invar] = locals()[invar]
@@ -224,7 +247,7 @@ def present(name, Name,
     r = __salt__['boto_cloudtrail.list_tags'](Name=Name,
                    region=region, key=key, keyid=keyid, profile=profile)
     _describe['Tags'] = r.get('tags', {})
-    tagchange = salt.utils.compare_dicts(_describe['Tags'], Tags)
+    tagchange = salt.utils.data.compare_dicts(_describe['Tags'], Tags)
     if bool(tagchange):
         need_update = True
         ret['changes'].setdefault('new', {})['Tags'] = Tags
@@ -243,7 +266,7 @@ def present(name, Name,
                    S3KeyPrefix=S3KeyPrefix,
                    SnsTopicName=SnsTopicName,
                    IncludeGlobalServiceEvents=IncludeGlobalServiceEvents,
-                   #IsMultiRegionTrail=IsMultiRegionTrail,
+                   IsMultiRegionTrail=IsMultiRegionTrail,
                    EnableLogFileValidation=EnableLogFileValidation,
                    CloudWatchLogsLogGroupArn=CloudWatchLogsLogGroupArn,
                    CloudWatchLogsRoleArn=CloudWatchLogsRoleArn,
@@ -275,12 +298,12 @@ def present(name, Name,
         if bool(tagchange):
             adds = {}
             removes = {}
-            for k, diff in tagchange.iteritems():
+            for k, diff in six.iteritems(tagchange):
                 if diff.get('new', '') != '':
                     # there's an update for this key
                     adds[k] = Tags[k]
                 elif diff.get('old', '') != '':
-                    removes[k] = _describe[k]
+                    removes[k] = _describe['Tags'][k]
             if bool(adds):
                 r = __salt__['boto_cloudtrail.add_tags'](Name=Name,
                    region=region, key=key, keyid=keyid, profile=profile, **adds)

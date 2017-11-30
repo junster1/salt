@@ -2,11 +2,14 @@
 '''
 Provide the service module for the proxy-minion REST sample
 '''
-# Import python libs
+# Import Python libs
 from __future__ import absolute_import
 import logging
+import fnmatch
+import re
 
-__proxyenabled__ = ['rest_sample']
+# Import Salt libs
+import salt.utils.platform
 
 log = logging.getLogger(__name__)
 
@@ -23,9 +26,22 @@ def __virtual__():
     '''
     Only work on systems that are a proxy minion
     '''
-    if __grains__['os'] == 'proxy':
-        return __virtualname__
-    return (False, 'The rest_service execution module failed to load: only available on proxy minions.')
+    try:
+        if salt.utils.platform.is_proxy() \
+                and __opts__['proxy']['proxytype'] == 'rest_sample':
+            return __virtualname__
+    except KeyError:
+        return (
+            False,
+            'The rest_service execution module failed to load. Check the '
+            'proxy key in pillar.'
+        )
+
+    return (
+        False,
+        'The rest_service execution module failed to load: only works on a '
+        'rest_sample proxy minion.'
+    )
 
 
 def get_all():
@@ -111,10 +127,22 @@ def restart(name, sig=None):
 
 def status(name, sig=None):
     '''
-    Return the status for a service via rest_sample, returns a bool
-    whether the service is running.
+    Return the status for a service via rest_sample.
+    If the name contains globbing, a dict mapping service name to True/False
+    values is returned.
 
     .. versionadded:: 2015.8.0
+
+    .. versionchanged:: Oxygen
+        The service name can now be a glob (e.g. ``salt*``)
+
+    Args:
+        name (str): The name of the service to check
+        sig (str): Not implemented
+
+    Returns:
+        bool: True if running, False otherwise
+        dict: Maps service name to True if running, False otherwise
 
     CLI Example:
 
@@ -124,11 +152,21 @@ def status(name, sig=None):
     '''
 
     proxy_fn = 'rest_sample.service_status'
-    resp = __proxy__[proxy_fn](name)
-    if resp['comment'] == 'stopped':
-        return False
-    if resp['comment'] == 'running':
-        return True
+    contains_globbing = bool(re.search(r'\*|\?|\[.+\]', name))
+    if contains_globbing:
+        services = fnmatch.filter(get_all(), name)
+    else:
+        services = [name]
+    results = {}
+    for service in services:
+        resp = __proxy__[proxy_fn](service)
+        if resp['comment'] == 'running':
+            results[service] = True
+        else:
+            results[service] = False
+    if contains_globbing:
+        return results
+    return results[name]
 
 
 def running(name, sig=None):

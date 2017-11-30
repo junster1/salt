@@ -12,6 +12,7 @@ Manage the information stored in the known_hosts files.
         - present
         - user: root
         - fingerprint: 16:27:ac:a5:76:28:2d:36:63:1b:56:4d:eb:df:a6:48
+        - fingerprint_hash_type: md5
 
     example.com:
       ssh_known_hosts:
@@ -20,12 +21,25 @@ Manage the information stored in the known_hosts files.
 '''
 from __future__ import absolute_import
 
-# Import python libs
+# Import Python libs
 import os
 
-# Import salt libs
-import salt.utils
+# Import Salt libs
+import salt.utils.platform
 from salt.exceptions import CommandNotFoundError
+
+# Define the state's virtual name
+__virtualname__ = 'ssh_known_hosts'
+
+
+def __virtual__():
+    '''
+    Does not work on Windows, requires ssh module functions
+    '''
+    if salt.utils.platform.is_windows():
+        return False, 'ssh_known_hosts: Does not support Windows'
+
+    return __virtualname__
 
 
 def present(
@@ -36,9 +50,9 @@ def present(
         port=None,
         enc=None,
         config=None,
-        hash_hostname=True,
         hash_known_hosts=True,
-        timeout=5):
+        timeout=5,
+        fingerprint_hash_type=None):
     '''
     Verifies that the specified host is known by the specified user
 
@@ -48,22 +62,24 @@ def present(
 
     name
         The name of the remote host (e.g. "github.com")
+        Note that only a single hostname is supported, if foo.example.com and
+        bar.example.com have the same host you will need two separate Salt
+        States to represent them.
 
     user
         The user who owns the ssh authorized keys file to modify
 
     fingerprint
-        The fingerprint of the key which must be presented in the known_hosts
+        The fingerprint of the key which must be present in the known_hosts
         file (optional if key specified)
 
     key
-        The public key which must be presented in the known_hosts file
+        The public key which must be present in the known_hosts file
         (optional if fingerprint specified)
 
     port
-        optional parameter, denoting the port of the remote host, which will be
-        used in case, if the public key will be requested from it. By default
-        the port 22 is used.
+        optional parameter, port which will be used to when requesting the
+        public key from the remote host, defaults to port 22.
 
     enc
         Defines what type of key is being used, can be ed25519, ecdsa ssh-rsa
@@ -75,13 +91,6 @@ def present(
         defaults to "/etc/ssh/ssh_known_hosts". If present, must be an
         absolute path when a user is not specified.
 
-    hash_hostname : True
-        Hash all hostnames and addresses in the known hosts file.
-
-        .. deprecated:: Carbon
-
-            Please use hash_known_hosts instead.
-
     hash_known_hosts : True
         Hash all hostnames and addresses in the known hosts file.
 
@@ -91,7 +100,15 @@ def present(
         time anything was read from that host, then the connection is closed
         and the host in question considered unavailable.  Default is 5 seconds.
 
-        .. versionadded:: Boron
+        .. versionadded:: 2016.3.0
+
+    fingerprint_hash_type
+        The public key fingerprint hash type that the public key fingerprint
+        was originally hashed with. This defaults to ``sha256`` if not specified.
+
+        .. versionadded:: 2016.11.4
+        .. versionchanged:: 2017.7.0: default changed from ``md5`` to ``sha256``
+
     '''
     ret = {'name': name,
            'changes': {},
@@ -108,14 +125,6 @@ def present(
         ret['result'] = False
         return dict(ret, comment=comment)
 
-    if not hash_hostname:
-        salt.utils.warn_until(
-            'Carbon',
-            'The hash_hostname parameter is misleading as ssh-keygen can only '
-            'hash the whole known hosts file, not entries for individual '
-            'hosts. Please use hash_known_hosts=False instead.')
-        hash_known_hosts = hash_hostname
-
     if __opts__['test']:
         if key and fingerprint:
             comment = 'Specify either "key" or "fingerprint", not both.'
@@ -130,7 +139,9 @@ def present(
             result = __salt__['ssh.check_known_host'](user, name,
                                                       key=key,
                                                       fingerprint=fingerprint,
-                                                      config=config)
+                                                      config=config,
+                                                      port=port,
+                                                      fingerprint_hash_type=fingerprint_hash_type)
         except CommandNotFoundError as err:
             ret['result'] = False
             ret['comment'] = 'ssh.check_known_host error: {0}'.format(err)
@@ -149,14 +160,17 @@ def present(
                                                                      config)
             return dict(ret, comment=comment)
 
-    result = __salt__['ssh.set_known_host'](user=user, hostname=name,
-                fingerprint=fingerprint,
-                key=key,
-                port=port,
-                enc=enc,
-                config=config,
-                hash_known_hosts=hash_known_hosts,
-                timeout=timeout)
+    result = __salt__['ssh.set_known_host'](
+        user=user,
+        hostname=name,
+        fingerprint=fingerprint,
+        key=key,
+        port=port,
+        enc=enc,
+        config=config,
+        hash_known_hosts=hash_known_hosts,
+        timeout=timeout,
+        fingerprint_hash_type=fingerprint_hash_type)
     if result['status'] == 'exists':
         return dict(ret,
                     comment='{0} already exists in {1}'.format(name, config))
@@ -164,13 +178,13 @@ def present(
         return dict(ret, result=False, comment=result['error'])
     else:  # 'updated'
         if key:
-            new_key = result['new']['key']
+            new_key = result['new'][0]['key']
             return dict(ret,
                     changes={'old': result['old'], 'new': result['new']},
                     comment='{0}\'s key saved to {1} (key: {2})'.format(
                              name, config, new_key))
         else:
-            fingerprint = result['new']['fingerprint']
+            fingerprint = result['new'][0]['fingerprint']
             return dict(ret,
                     changes={'old': result['old'], 'new': result['new']},
                     comment='{0}\'s key saved to {1} (fingerprint: {2})'.format(
@@ -183,6 +197,9 @@ def absent(name, user=None, config=None):
 
     name
         The host name
+        Note that only single host names are supported.  If foo.example.com
+        and bar.example.com are the same machine and you need to exclude both,
+        you will need one Salt state for each.
 
     user
         The user who owns the ssh authorized keys file to modify
@@ -208,7 +225,7 @@ def absent(name, user=None, config=None):
         ret['result'] = False
         return dict(ret, comment=comment)
 
-    known_host = __salt__['ssh.get_known_host'](user=user, hostname=name, config=config)
+    known_host = __salt__['ssh.get_known_host_entries'](user=user, hostname=name, config=config)
     if not known_host:
         return dict(ret, comment='Host is already absent')
 

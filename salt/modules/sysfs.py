@@ -3,19 +3,20 @@
 Module for interfacing with SysFS
 
 .. seealso:: https://www.kernel.org/doc/Documentation/filesystems/sysfs.txt
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 '''
-# Import python libs
+# Import Python libs
 from __future__ import absolute_import
 import logging
 import os
 import stat
 
-# Import external libs
-import salt.ext.six as six
+# Import Salt libs
+import salt.utils.files
+import salt.utils.platform
 
-# Import salt libs
-import salt.utils
+# Import 3rd-party libs
+from salt.ext import six
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ def __virtual__():
     '''
     Only work on Linux
     '''
-    return salt.utils.is_linux()
+    return salt.utils.platform.is_linux()
 
 
 def attr(key, value=None):
@@ -63,7 +64,7 @@ def write(key, value):
     try:
         key = target(key)
         log.trace('Writing {0} to {1}'.format(value, key))
-        with salt.utils.fopen(key, 'w') as twriter:
+        with salt.utils.files.fopen(key, 'w') as twriter:
             twriter.write('{0}\n'.format(value))
             return True
     except:  # pylint: disable=bare-except
@@ -73,7 +74,9 @@ def write(key, value):
 def read(key, root=''):
     '''
     Read from SysFS
+
     :param key: file or path in SysFS; if key is a list then root will be prefixed on each key
+
     :return: the full (tree of) SysFS attributes under key
 
     CLI example:
@@ -136,8 +139,10 @@ def read(key, root=''):
 def target(key, full=True):
     '''
     Return the basename of a SysFS key path
+
     :param key: the location to resolve within SysFS
     :param full: full path instead of basename
+
     :return: fullpath or basename of path
 
     CLI example:
@@ -164,14 +169,57 @@ def interfaces(root):
     Generate a dictionary with all available interfaces relative to root.
     Symlinks are not followed.
 
-    'r' interfaces are read-only
-    'w' interfaces are write-only (e.g. actions)
-    'rw' are interfaces that can both be read or written
-
     CLI example:
      .. code-block:: bash
 
         salt '*' sysfs.interfaces block/bcache0/bcache
+
+    Output example:
+     .. code-block:: json
+
+       {
+          "r": [
+            "state",
+            "partial_stripes_expensive",
+            "writeback_rate_debug",
+            "stripe_size",
+            "dirty_data",
+            "stats_total/cache_hits",
+            "stats_total/cache_bypass_misses",
+            "stats_total/bypassed",
+            "stats_total/cache_readaheads",
+            "stats_total/cache_hit_ratio",
+            "stats_total/cache_miss_collisions",
+            "stats_total/cache_misses",
+            "stats_total/cache_bypass_hits",
+          ],
+          "rw": [
+            "writeback_rate",
+            "writeback_rate_update_seconds",
+            "cache_mode",
+            "writeback_delay",
+            "label",
+            "writeback_running",
+            "writeback_metadata",
+            "running",
+            "writeback_rate_p_term_inverse",
+            "sequential_cutoff",
+            "writeback_percent",
+            "writeback_rate_d_term",
+            "readahead"
+          ],
+          "w": [
+            "stop",
+            "clear_stats",
+            "attach",
+            "detach"
+          ]
+       }
+
+    .. note::
+      * 'r' interfaces are read-only
+      * 'w' interfaces are write-only (e.g. actions)
+      * 'rw' are interfaces that can both be read or written
     '''
 
     root = target(root)
@@ -203,7 +251,7 @@ def interfaces(root):
             elif is_r:
                 reads.append(relpath)
             else:
-                log.warn('Unable to find any interfaces in {0}'.format(canpath))
+                log.warning('Unable to find any interfaces in {0}'.format(canpath))
 
     return {
         'r': reads,

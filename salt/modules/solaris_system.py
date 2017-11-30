@@ -4,11 +4,14 @@ Support for reboot, shutdown, etc
 
 This module is assumes we are using solaris-like shutdown
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 '''
+# Import Python libs
 from __future__ import absolute_import
 
-import salt.utils
+# Import Salt libs
+import salt.utils.path
+import salt.utils.platform
 
 # Define the module's virtual name
 __virtualname__ = 'system'
@@ -18,9 +21,13 @@ def __virtual__():
     '''
     Only supported on Solaris-like systems
     '''
-    if not salt.utils.is_sunos() or not salt.utils.which('shutdown'):
-        return (False, 'The system execution module failed to load: '
-                'only available on Solaris-like ystems with shutdown command.')
+    if not salt.utils.platform.is_sunos() \
+            or not salt.utils.path.which('shutdown'):
+        return (
+            False,
+            'The system execution module failed to load: only available on '
+            'Solaris-like ystems with shutdown command.'
+        )
     return __virtualname__
 
 

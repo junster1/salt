@@ -1,3 +1,5 @@
+.. _tutorial-multi-master:
+
 =====================
 Multi Master Tutorial
 =====================
@@ -17,6 +19,16 @@ In 0.16.0, the masters do not share any information, keys need to be accepted
 on both masters, and shared files need to be shared manually or use tools like
 the git fileserver backend to ensure that the :conf_master:`file_roots` are
 kept consistent.
+
+Beginning with Salt 2016.11.0, the :ref:`Pluggable Minion Data Cache <pluggable-data-cache>`
+was introduced. The minion data cache contains the Salt Mine data, minion grains, and minion
+pillar information cached on the Salt Master. By default, Salt uses the ``localfs`` cache
+module, but other external data stores can be used instead.
+
+Using a pluggable minion cache modules allows for the data stored on a Salt Master about
+Salt Minions to be replicated on other Salt Masters the Minion is connected to. Please see
+the :ref:`Minion Data Cache <cache>` documentation for more information and configuration
+examples.
 
 Summary of Steps
 ----------------
@@ -122,6 +134,16 @@ instructions managed by one master will not agree with other masters.
 
 The recommended way to sync these is to use a fileserver backend like gitfs or
 to keep these files on shared storage.
+
+.. important::
+   If using gitfs/git_pillar with the cachedir shared between masters using
+   `GlusterFS`_, nfs, or another network filesystem, and the masters are
+   running Salt 2015.5.9 or later, it is strongly recommended not to turn off
+   :conf_master:`gitfs_global_lock`/:conf_master:`git_pillar_global_lock` as
+   doing so will cause lock files to be removed if they were created by a
+   different master.
+
+.. _GlusterFS: http://www.gluster.org/
 
 Pillar_Roots
 ````````````

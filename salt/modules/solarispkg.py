@@ -1,6 +1,12 @@
 # -*- coding: utf-8 -*-
 '''
 Package support for Solaris
+
+.. important::
+    If you feel that Salt should be using this module to manage packages on a
+    minion, and it is using a different module (or gives an error similar to
+    *'pkg.install' is not available*), see :ref:`here
+    <module-provider-override>`.
 '''
 from __future__ import absolute_import
 
@@ -10,7 +16,9 @@ import os
 import logging
 
 # Import salt libs
-import salt.utils
+import salt.utils.data
+import salt.utils.functools
+import salt.utils.files
 from salt.exceptions import CommandExecutionError, MinionError
 
 log = logging.getLogger(__name__)
@@ -23,7 +31,7 @@ def __virtual__():
     '''
     Set the virtual pkg module if the os is Solaris
     '''
-    if __grains__['os'] == 'Solaris' and float(__grains__['kernelrelease']) <= 5.10:
+    if __grains__['os_family'] == 'Solaris' and float(__grains__['kernelrelease']) <= 5.10:
         return __virtualname__
     return (False,
             'The solarispkg execution module failed to load: only available '
@@ -49,7 +57,7 @@ def _write_adminfile(kwargs):
     basedir = kwargs.get('basedir', 'default')
 
     # Make tempfile to hold the adminfile contents.
-    fd_, adminfile = salt.utils.mkstemp(prefix="salt-", close_fd=False)
+    fd_, adminfile = salt.utils.files.mkstemp(prefix="salt-", close_fd=False)
 
     # Write to file then close it.
     os.write(fd_, 'email={0}\n'.format(email))
@@ -82,9 +90,9 @@ def list_pkgs(versions_as_list=False, **kwargs):
 
         salt '*' pkg.list_pkgs
     '''
-    versions_as_list = salt.utils.is_true(versions_as_list)
+    versions_as_list = salt.utils.data.is_true(versions_as_list)
     # not yet implemented or not applicable
-    if any([salt.utils.is_true(kwargs.get(x))
+    if any([salt.utils.data.is_true(kwargs.get(x))
             for x in ('removed', 'purge_desired')]):
         return {}
 
@@ -154,7 +162,7 @@ def latest_version(*names, **kwargs):
     return ret
 
 # available_version is being deprecated
-available_version = salt.utils.alias_function(latest_version, 'available_version')
+available_version = salt.utils.functools.alias_function(latest_version, 'available_version')
 
 
 def upgrade_available(name):
@@ -309,7 +317,7 @@ def install(name=None, sources=None, saltenv='base', **kwargs):
         The ID declaration is ignored, as the package name is read from the
         ``sources`` parameter.
     '''
-    if salt.utils.is_true(kwargs.get('refresh')):
+    if salt.utils.data.is_true(kwargs.get('refresh')):
         log.warning('\'refresh\' argument not implemented for solarispkg '
                     'module')
 
@@ -354,7 +362,7 @@ def install(name=None, sources=None, saltenv='base', **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(
@@ -451,7 +459,7 @@ def remove(name=None, pkgs=None, saltenv='base', **kwargs):
         basedir = kwargs.get('basedir', 'default')
 
         # Make tempfile to hold the adminfile contents.
-        fd_, adminfile = salt.utils.mkstemp(prefix="salt-", close_fd=False)
+        fd_, adminfile = salt.utils.files.mkstemp(prefix="salt-", close_fd=False)
 
         # Write to file then close it.
         os.write(fd_, 'email={0}\n'.format(email))
@@ -480,7 +488,7 @@ def remove(name=None, pkgs=None, saltenv='base', **kwargs):
 
     __context__.pop('pkg.list_pkgs', None)
     new = list_pkgs()
-    ret = salt.utils.compare_dicts(old, new)
+    ret = salt.utils.data.compare_dicts(old, new)
 
     if errors:
         raise CommandExecutionError(

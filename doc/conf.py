@@ -7,6 +7,7 @@ import functools
 import sys
 import os
 import types
+import time
 
 from sphinx.directives import TocTree
 
@@ -14,34 +15,53 @@ from sphinx.directives import TocTree
 # pylint: disable=R0903
 class Mock(object):
     '''
-    Mock out specified imports
+    Mock out specified imports.
 
     This allows autodoc to do its thing without having oodles of req'd
     installed libs. This doesn't work with ``import *`` imports.
 
+    This Mock class can be configured to return a specific values at specific names, if required.
+
     http://read-the-docs.readthedocs.org/en/latest/faq.html#i-get-import-errors-on-libraries-that-depend-on-c-modules
     '''
-    def __init__(self, *args, **kwargs):
-        pass
+    def __init__(self, mapping=None, *args, **kwargs):
+        """
+        Mapping allows autodoc to bypass the Mock object, but actually assign
+        a specific value, expected by a specific attribute returned.
+        """
+        self.__mapping = mapping or {}
 
     __all__ = []
 
     def __call__(self, *args, **kwargs):
-        ret = Mock()
         # If mocked function is used as a decorator, expose decorated function.
         # if args and callable(args[-1]):
         #     functools.update_wrapper(ret, args[0])
-        return ret
+        return Mock(mapping=self.__mapping)
 
-    @classmethod
-    def __getattr__(cls, name):
-        if name in ('__file__', '__path__'):
-            return '/dev/null'
+    def __getattr__(self, name):
+        #__mapping = {'total': 0}
+        data = None
+        if name in self.__mapping:
+            data = self.__mapping.get(name)
+        elif name in ('__file__', '__path__'):
+            data = '/dev/null'
         else:
-            return Mock()
+            data = Mock(mapping=self.__mapping)
+        return data
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        raise StopIteration
+
 # pylint: enable=R0903
 
 MOCK_MODULES = [
+    # Python stdlib
+    'user',
+
     # salt core
     'Crypto',
     'Crypto.Signature',
@@ -56,6 +76,7 @@ MOCK_MODULES = [
     'yaml',
     'yaml.constructor',
     'yaml.nodes',
+    'yaml.parser',
     'yaml.scanner',
     'zmq',
     'zmq.eventloop',
@@ -94,6 +115,7 @@ MOCK_MODULES = [
     'tornado.stack_context',
     'tornado.web',
     'tornado.websocket',
+    'tornado.locks',
 
     'ws4py',
     'ws4py.server',
@@ -121,14 +143,68 @@ MOCK_MODULES = [
     'yum',
     'OpenSSL',
     'zfs',
+    'salt.ext.six.moves.winreg',
+    'win32security',
+    'ntsecuritycon',
+    'napalm',
+    'dson',
+    'jnpr',
+    'json',
+    'lxml',
+    'lxml.etree',
+    'jnpr.junos',
+    'jnpr.junos.utils',
+    'jnpr.junos.utils.config',
+    'jnpr.junos.utils.sw',
+    'dns',
+    'dns.resolver',
+    'netaddr',
+    'netaddr.IPAddress',
+    'netaddr.core',
+    'netaddr.core.AddrFormatError',
+    'pyroute2',
+    'pyroute2.ipdb',
+    'avahi',
+    'dbus',
+    'twisted',
+    'twisted.internet',
+    'twisted.internet.protocol',
+    'twisted.internet.protocol.DatagramProtocol',
+    'msgpack',
 ]
 
 for mod_name in MOCK_MODULES:
-    sys.modules[mod_name] = Mock()
+    if mod_name == 'psutil':
+        mock = Mock(mapping={'total': 0})  # Otherwise it will crash Sphinx
+    else:
+        mock = Mock()
+    sys.modules[mod_name] = mock
+
+def mock_decorator_with_params(*oargs, **okwargs):
+    '''
+    Optionally mock a decorator that takes parameters
+
+    E.g.:
+
+    @blah(stuff=True)
+    def things():
+        pass
+    '''
+    def inner(fn, *iargs, **ikwargs):
+        if hasattr(fn, '__call__'):
+            return fn
+        else:
+            return Mock()
+    return inner
 
 # Define a fake version attribute for the following libs.
 sys.modules['libcloud'].__version__ = '0.0.0'
 sys.modules['pymongo'].version = '0.0.0'
+sys.modules['ntsecuritycon'].STANDARD_RIGHTS_REQUIRED = 0
+sys.modules['ntsecuritycon'].SYNCHRONIZE = 0
+
+# Define a fake version attribute for the following libs.
+sys.modules['cherrypy'].config = mock_decorator_with_params
 
 
 # -- Add paths to PYTHONPATH ---------------------------------------------------
@@ -163,20 +239,28 @@ intersphinx_mapping = {
 
 # -- General Configuration -----------------------------------------------------
 
+# Set a var if we're building docs for the live site or not
+on_saltstack = 'SALT_ON_SALTSTACK' in os.environ
+
 project = 'Salt'
-copyright = '2016 SaltStack, Inc.'
 
 version = salt.version.__version__
-latest_release = '2015.8.3'  # latest release
-previous_release = '2015.5.9'  # latest release from previous branch
-previous_release_dir = '2015.5'  # path on web server for previous branch
-build_type = 'develop'  # latest, previous, develop
+latest_release = '2017.7.2'  # latest release
+previous_release = '2016.11.8'  # latest release from previous branch
+previous_release_dir = '2016.11'  # path on web server for previous branch
+next_release = ''  # next release
+next_release_dir = ''  # path on web server for next release branch
 
-# set release to 'version' for develop so sha is used
-# - otherwise -
-# set release to 'latest_release' or 'previous_release'
+today = ''
+copyright = ''
+if on_saltstack:
+    today = "Generated on " + time.strftime("%B %d, %Y") + " at " + time.strftime("%X %Z") + "."
+    copyright = time.strftime("%Y")
 
-release = latest_release  # version, latest_release, previous_release
+# < --- START do not merge these settings to other branches START ---> #
+build_type = 'develop'  # latest, previous, develop, next
+release = version  # version, latest_release, previous_release
+# < --- END do not merge these settings to other branches END ---> #
 
 # Set google custom search engine
 
@@ -186,6 +270,8 @@ elif release.startswith('2014.7'):
     search_cx = '004624818632696854117:thhslradbru' # 2014.7
 elif release.startswith('2015.5'):
     search_cx = '004624818632696854117:ovogwef29do' # 2015.5
+elif release.startswith('2015.8'):
+    search_cx = '004624818632696854117:aw_tegffouy' # 2015.8
 else:
     search_cx = '004624818632696854117:haj7bjntf4s'  # develop
 
@@ -204,6 +290,7 @@ exclude_patterns = ['_build', '_incl/*', 'ref/cli/_includes/*.rst']
 extensions = [
     'saltdomain', # Must come early
     'sphinx.ext.autodoc',
+    'sphinx.ext.napoleon',
     'sphinx.ext.autosummary',
     'sphinx.ext.extlinks',
     'sphinx.ext.intersphinx',
@@ -233,11 +320,26 @@ rst_prolog = """\
 .. _`salt-packagers`: https://groups.google.com/forum/#!forum/salt-packagers
 .. |windownload| raw:: html
 
-     <p>x86: <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-x86-Setup.exe"><strong>Salt-Minion-{release}-x86-Setup.exe</strong></a>
-      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-x86-Setup.exe.md5"><strong>md5</strong></a></p>
+     <p>Python2 x86: <a
+     href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py2-x86-Setup.exe"><strong>Salt-Minion-{release}-x86-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py2-x86-Setup.exe.md5"><strong>md5</strong></a></p>
 
-     <p>AMD64: <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-AMD64-Setup.exe"><strong>Salt-Minion-{release}-AMD64-Setup.exe</strong></a>
-      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-AMD64-Setup.exe.md5"><strong>md5</strong></a></p>
+     <p>Python2 AMD64: <a
+     href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py2-AMD64-Setup.exe"><strong>Salt-Minion-{release}-AMD64-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py2-AMD64-Setup.exe.md5"><strong>md5</strong></a></p>
+     <p>Python3 x86: <a
+     href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py3-x86-Setup.exe"><strong>Salt-Minion-{release}-x86-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py3-x86-Setup.exe.md5"><strong>md5</strong></a></p>
+
+     <p>Python3 AMD64: <a
+     href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py3-AMD64-Setup.exe"><strong>Salt-Minion-{release}-AMD64-Setup.exe</strong></a>
+      | <a href="https://repo.saltstack.com/windows/Salt-Minion-{release}-Py3-AMD64-Setup.exe.md5"><strong>md5</strong></a></p>
+
+
+.. |osxdownload| raw:: html
+
+     <p>x86_64: <a href="https://repo.saltstack.com/osx/salt-{release}-x86_64.pkg"><strong>salt-{release}-x86_64.pkg</strong></a>
+      | <a href="https://repo.saltstack.com/osx/salt-{release}-x86_64.pkg.md5"><strong>md5</strong></a></p>
 
 """.format(release=release)
 
@@ -246,6 +348,7 @@ extlinks = {
     'blob': ('https://github.com/saltstack/salt/blob/%s/%%s' % 'develop', None),
     'download': ('https://cloud.github.com/downloads/saltstack/salt/%s', None),
     'issue': ('https://github.com/saltstack/salt/issues/%s', 'issue '),
+    'pull': ('https://github.com/saltstack/salt/pull/%s', 'PR '),
     'formula_url': ('https://github.com/saltstack-formulas/%s', ''),
 }
 
@@ -266,9 +369,6 @@ html_static_path = ['_static']
 html_logo = None # specified in the theme layout.html
 html_favicon = 'favicon.ico'
 html_use_smartypants = False
-
-# Set a var if we're building docs for the live site or not
-on_saltstack = 'SALT_ON_SALTSTACK' in os.environ
 
 # Use Google customized search or use Sphinx built-in JavaScript search
 if on_saltstack:
@@ -311,8 +411,12 @@ html_context = {
     'latest_release': latest_release,
     'previous_release': previous_release,
     'previous_release_dir': previous_release_dir,
+    'next_release': next_release,
+    'next_release_dir': next_release_dir,
     'search_cx': search_cx,
     'build_type': build_type,
+    'today': today,
+    'copyright': copyright,
 }
 
 html_use_index = True
@@ -356,10 +460,10 @@ linkcheck_ignore = [r'http://127.0.0.1',
                     r'http://logstash.net/docs/latest/inputs/udp',
                     r'http://logstash.net/docs/latest/inputs/zeromq',
                     r'http://www.youtube.com/saltstack',
-                    r'http://raven.readthedocs.org',
+                    r'https://raven.readthedocs.io',
                     r'https://getsentry.com',
-                    r'http://salt-cloud.readthedocs.org',
-                    r'http://salt.readthedocs.org',
+                    r'https://salt-cloud.readthedocs.io',
+                    r'https://salt.readthedocs.io',
                     r'http://www.pip-installer.org/',
                     r'http://www.windowsazure.com/',
                     r'https://github.com/watching',
@@ -409,8 +513,9 @@ epub_publisher = epub_author
 epub_copyright = copyright
 
 epub_scheme = 'URL'
-epub_identifier = 'http://saltstack.org/'
+epub_identifier = 'http://saltstack.com/'
 
+epub_tocdup = False
 #epub_tocdepth = 3
 
 

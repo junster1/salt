@@ -27,8 +27,8 @@ from __future__ import absolute_import
 import logging
 
 # Import salt libs
-import salt.utils
-import salt.ext.six as six
+import salt.utils.path
+from salt.ext import six
 from salt.exceptions import CommandExecutionError
 
 log = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def __virtual__():
     '''
     Only load if RabbitMQ is installed.
     '''
-    return salt.utils.which('rabbitmqctl') is not None
+    return salt.utils.path.which('rabbitmqctl') is not None
 
 
 def _check_perms_changes(name, newperms, runas=None, existing=None):
@@ -57,9 +57,15 @@ def _check_perms_changes(name, newperms, runas=None, existing=None):
 
     perm_need_change = False
     for vhost_perms in newperms:
-        for vhost, perms in vhost_perms.iteritems():
+        for vhost, perms in six.iteritems(vhost_perms):
             if vhost in existing:
-                if perms != existing[vhost]:
+                existing_vhost = existing[vhost]
+                if perms != existing_vhost:
+                    # This checks for setting permissions to nothing in the state,
+                    # when previous state runs have already set permissions to
+                    # nothing. We don't want to report a change in this case.
+                    if existing_vhost == '' and perms == ['', '', '']:
+                        continue
                     perm_need_change = True
             else:
                 perm_need_change = True
@@ -67,20 +73,14 @@ def _check_perms_changes(name, newperms, runas=None, existing=None):
     return perm_need_change
 
 
-def _check_tags_changes(name, new_tags, runas=None):
+def _get_current_tags(name, runas=None):
     '''
     Whether Rabbitmq user's tags need to be changed
     '''
-    if new_tags:
-        if isinstance(new_tags, str):
-            new_tags = new_tags.split()
-        try:
-            users = __salt__['rabbitmq.list_users'](runas=runas)[name] - set(new_tags)
-        except CommandExecutionError as err:
-            log.error('Error: {0}'.format(err))
-            return []
-        return users
-    else:
+    try:
+        return list(__salt__['rabbitmq.list_users'](runas=runas)[name])
+    except CommandExecutionError as err:
+        log.error('Error: {0}'.format(err))
         return []
 
 
@@ -173,17 +173,22 @@ def present(name,
                                       {'old': 'Removed password.',
                                        'new': ''}})
 
-    new_tags = _check_tags_changes(name, tags, runas=runas)
-    if new_tags:
-        if not __opts__['test']:
-            try:
-                __salt__['rabbitmq.set_user_tags'](name, tags, runas=runas)
-            except CommandExecutionError as err:
-                ret['comment'] = 'Error: {0}'.format(err)
-                return ret
-        ret['changes'].update({'tags':
-                              {'old': tags,
-                               'new': new_tags}})
+    if tags is not None:
+        current_tags = _get_current_tags(name, runas=runas)
+        if isinstance(tags, six.string_types):
+            tags = tags.split()
+        # Diff the tags sets. Symmetric difference operator ^ will give us
+        # any element in one set, but not both
+        if set(tags) ^ set(current_tags):
+            if not __opts__['test']:
+                try:
+                    __salt__['rabbitmq.set_user_tags'](name, tags, runas=runas)
+                except CommandExecutionError as err:
+                    ret['comment'] = 'Error: {0}'.format(err)
+                    return ret
+            ret['changes'].update({'tags':
+                                  {'old': current_tags,
+                                   'new': tags}})
     try:
         existing_perms = __salt__['rabbitmq.list_user_permissions'](name, runas=runas)
     except CommandExecutionError as err:

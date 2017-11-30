@@ -2,7 +2,7 @@
 '''
 Watch for pkgs that have upgrades, then fire an event.
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 '''
 
 # Import python libs
@@ -26,13 +26,21 @@ def validate(config):
     Validate the beacon configuration
     '''
     # Configuration for pkg beacon should be a list
-    if not isinstance(config, dict):
-        log.info('Configuration for pkg beacon must be a dictionary.')
-        return False
-    if 'pkgs' not in config:
-        log.info('Configuration for pkg beacon requires list of pkgs.')
-        return False
-    return True
+    if not isinstance(config, list):
+        return False, ('Configuration for pkg beacon must be a list.')
+
+    # Configuration for pkg beacon should contain pkgs
+    pkgs_found = False
+    pkgs_not_list = False
+    for config_item in config:
+        if 'pkgs' in config_item:
+            pkgs_found = True
+            if isinstance(config_item['pkgs'], list):
+                pkgs_not_list = True
+
+    if not pkgs_found or not pkgs_not_list:
+        return False, 'Configuration for pkg beacon requires list of pkgs.'
+    return True, 'Valid beacon configuration'
 
 
 def beacon(config):
@@ -50,13 +58,16 @@ def beacon(config):
             - refresh: True
     '''
     ret = []
-    if not validate(config):
-        return ret
 
     _refresh = False
-    if 'refresh' in config and config['refresh']:
-        _refresh = True
-    for pkg in config['pkgs']:
+    pkgs = []
+    for config_item in config:
+        if 'pkgs' in config_item:
+            pkgs += config_item['pkgs']
+        if 'refresh' in config and config['refresh']:
+            _refresh = True
+
+    for pkg in pkgs:
         _installed = __salt__['pkg.version'](pkg)
         _latest = __salt__['pkg.latest_version'](pkg, refresh=_refresh)
         if _installed and _latest:

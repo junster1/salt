@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 '''
-.. versionadded:: Boron.
-
 Manage Telemetry alert configurations
 =====================================
+
+.. versionadded:: 2016.3.0
 
 Create, Update and destroy Mongo Telemetry alert configurations.
 

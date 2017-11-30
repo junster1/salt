@@ -25,7 +25,7 @@ no disk space:
         - unless: echo 'foo' > /tmp/.test && rm -f /tmp/.test
 
 Only run if the file specified by ``creates`` does not exist, in this case
-touch /tmp/foo if it does not exist.
+touch /tmp/foo if it does not exist:
 
 .. code-block:: yaml
 
@@ -33,9 +33,29 @@ touch /tmp/foo if it does not exist.
       cmd.run:
         - creates: /tmp/foo
 
+``creates`` also accepts a list of files:
+
+.. code-block:: yaml
+
+    echo 'foo' | tee /tmp/bar > /tmp/baz:
+      cmd.run:
+        - creates:
+          - /tmp/bar
+          - /tmp/baz
+
 .. note::
 
     The ``creates`` option was added to version 2014.7.0
+
+Sometimes when running a command that starts up a daemon, the init script
+doesn't return properly which causes Salt to wait indefinitely for a response.
+In situations like this try the following:
+
+.. code-block:: yaml
+
+    run_installer:
+      cmd.run:
+        - name: /tmp/installer.bin  > /dev/null 2>&1
 
 Salt determines whether the ``cmd`` state is successfully enforced based on the exit
 code returned by the command. If the command returns a zero exit code, then salt
@@ -151,15 +171,15 @@ Should I use :mod:`cmd.run <salt.states.cmd.run>` or :mod:`cmd.wait <salt.states
 
 .. note::
 
-    Use ``cmd.run`` together with :mod:`onchanges </ref/states/requisites#onchanges>`
-    instead of ``cmd.wait``.
+    Use :mod:`cmd.run <salt.states.cmd.run>` together with :ref:`onchanges <requisites-onchanges>`
+    instead of :mod:`cmd.wait <salt.states.cmd.wait>`.
 
 These two states are often confused. The important thing to remember about them
 is that :mod:`cmd.run <salt.states.cmd.run>` states are run each time the SLS
 file that contains them is applied. If it is more desirable to have a command
 that only runs after some other state changes, then :mod:`cmd.wait
 <salt.states.cmd.wait>` does just that. :mod:`cmd.wait <salt.states.cmd.wait>`
-is designed to :doc:`watch </ref/states/requisites>` other states, and is
+is designed to :ref:`watch <requisites-watch>` other states, and is
 executed when the state it is watching changes. Example:
 
 .. code-block:: yaml
@@ -180,7 +200,7 @@ executed when the state it is watching changes. Example:
 function, which is called by ``watch`` on changes.
 
 ``cmd.wait`` will be deprecated in future due to the confusion it causes. The
-preferred format is using the :doc:`onchanges Requisite </ref/states/requisites>`, which
+preferred format is using the :ref:`onchanges Requisite <requisites-onchanges>`, which
 works on ``cmd.run`` as well as on any other state. The example would then look as follows:
 
 .. code-block:: yaml
@@ -200,38 +220,28 @@ works on ``cmd.run`` as well as on any other state. The example would then look 
 How do I create an environment from a pillar map?
 -------------------------------------------------
 
-The map that comes from a pillar cannot be directly consumed by the env option.
-To use it one must convert it to a list. Example:
+The map that comes from a pillar can be directly consumed by the env option!
+To use it, one may pass it like this. Example:
 
 .. code-block:: yaml
 
     printenv:
       cmd.run:
-        - env:
-          {% for key, value in pillar['keys'].iteritems() %}
-          - '{{ key }}': '{{ value }}'
-          {% endfor %}
+        - env: {{ salt['pillar.get']('example:key', {}) }}
 
 '''
 
 # Import python libs
 from __future__ import absolute_import
 
-# Windows platform has no 'grp' module
 import os
 import copy
 import json
 import logging
 
-HAS_GRP = False
-try:
-    import grp
-    HAS_GRP = True
-except ImportError:
-    pass
-
 # Import salt libs
-import salt.utils
+import salt.utils.args
+import salt.utils.functools
 from salt.exceptions import CommandExecutionError, SaltRenderError
 from salt.ext.six import string_types
 
@@ -267,7 +277,7 @@ def _reinterpreted_state(state):
             out = out[idx + 1:]
         data = {}
         try:
-            for item in salt.utils.shlex_split(out):
+            for item in salt.utils.args.shlex_split(out):
                 key, val = item.split('=')
                 data[key] = val
         except ValueError:
@@ -314,11 +324,10 @@ def _is_true(val):
     raise ValueError('Failed parsing boolean value: {0}'.format(val))
 
 
-def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
+def mod_run_check(cmd_kwargs, onlyif, unless, creates):
     '''
     Execute the onlyif and unless logic.
     Return a result dict if:
-    * group is not available
     * onlyif failed (onlyif != 0)
     * unless succeeded (unless == 0)
     else return True
@@ -327,35 +336,28 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
     # to quote problems
     cmd_kwargs = copy.deepcopy(cmd_kwargs)
     cmd_kwargs['use_vt'] = False
-    if group and HAS_GRP:
-        try:
-            egid = grp.getgrnam(group).gr_gid
-            if not __opts__['test']:
-                os.setegid(egid)
-        except KeyError:
-            return {'comment': 'The group {0} is not available'.format(group),
-                    'result': False}
+    cmd_kwargs['bg'] = False
 
     if onlyif is not None:
         if isinstance(onlyif, string_types):
             cmd = __salt__['cmd.retcode'](onlyif, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd != 0:
-                return {'comment': 'onlyif execution failed',
+                return {'comment': 'onlyif condition is false',
                         'skip_watch': True,
                         'result': True}
         elif isinstance(onlyif, list):
             for entry in onlyif:
                 cmd = __salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs)
-                log.debug('Last command return code: {0}'.format(cmd))
+                log.debug('Last command \'{0}\' return code: {1}'.format(entry, cmd))
                 if cmd != 0:
-                    return {'comment': 'onlyif execution failed',
-                        'skip_watch': True,
-                        'result': True}
+                    return {'comment': 'onlyif condition is false: {0}'.format(entry),
+                            'skip_watch': True,
+                            'result': True}
         elif not isinstance(onlyif, string_types):
             if not onlyif:
                 log.debug('Command not run: onlyif did not evaluate to string_type')
-                return {'comment': 'onlyif execution failed',
+                return {'comment': 'onlyif condition is false',
                         'skip_watch': True,
                         'result': True}
 
@@ -364,7 +366,7 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
             cmd = __salt__['cmd.retcode'](unless, ignore_retcode=True, python_shell=True, **cmd_kwargs)
             log.debug('Last command return code: {0}'.format(cmd))
             if cmd == 0:
-                return {'comment': 'unless execution succeeded',
+                return {'comment': 'unless condition is true',
                         'skip_watch': True,
                         'result': True}
         elif isinstance(unless, list):
@@ -372,14 +374,14 @@ def mod_run_check(cmd_kwargs, onlyif, unless, group, creates):
             for entry in unless:
                 cmd.append(__salt__['cmd.retcode'](entry, ignore_retcode=True, python_shell=True, **cmd_kwargs))
                 log.debug('Last command return code: {0}'.format(cmd))
-                if all([c == 0 for c in cmd]):
-                    return {'comment': 'unless execution succeeded',
-                            'skip_watch': True,
-                            'result': True}
+            if all([c == 0 for c in cmd]):
+                return {'comment': 'unless condition is true',
+                        'skip_watch': True,
+                        'result': True}
         elif not isinstance(unless, string_types):
             if unless:
                 log.debug('Command not run: unless did not evaluate to string_type')
-                return {'comment': 'unless execution succeeded',
+                return {'comment': 'unless condition is true',
                         'skip_watch': True,
                         'result': True}
 
@@ -401,8 +403,7 @@ def wait(name,
          unless=None,
          creates=None,
          cwd=None,
-         user=None,
-         group=None,
+         runas=None,
          shell=None,
          env=(),
          stateful=False,
@@ -415,7 +416,8 @@ def wait(name,
 
     .. note::
 
-        Use :mod:`cmd.run <salt.states.cmd.run>` with :mod:`onchange </ref/states/requisites#onchanges>` instead.
+        Use :mod:`cmd.run <salt.states.cmd.run>` together with :mod:`onchanges </ref/states/requisites#onchanges>`
+        instead of :mod:`cmd.wait <salt.states.cmd.wait>`.
 
     name
         The command to execute, remember that the command will execute with the
@@ -433,11 +435,8 @@ def wait(name,
         The current working directory to execute the command in, defaults to
         /root
 
-    user
+    runas
         The user name to run the command as
-
-    group
-        The group context to run the command as
 
     shell
         The shell to use for execution, defaults to /bin/sh
@@ -459,8 +458,7 @@ def wait(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -491,7 +489,7 @@ def wait(name,
         a state. For more information, see the :ref:`stateful-argument` section.
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
@@ -513,7 +511,7 @@ def wait(name,
 
 
 # Alias "cmd.watch" to "cmd.wait", as this is a common misconfiguration
-watch = salt.utils.alias_function(wait, 'watch')
+watch = salt.utils.functools.alias_function(wait, 'watch')
 
 
 def wait_script(name,
@@ -522,8 +520,7 @@ def wait_script(name,
                 onlyif=None,
                 unless=None,
                 cwd=None,
-                user=None,
-                group=None,
+                runas=None,
                 shell=None,
                 env=None,
                 stateful=False,
@@ -562,11 +559,8 @@ def wait_script(name,
         The current working directory to execute the command in, defaults to
         /root
 
-    user
+    runas
         The user name to run the command as
-
-    group
-        The group context to run the command as
 
     shell
         The shell to use for execution, defaults to the shell grain
@@ -588,8 +582,7 @@ def wait_script(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -642,10 +635,10 @@ def run(name,
         unless=None,
         creates=None,
         cwd=None,
-        user=None,
-        group=None,
+        runas=None,
         shell=None,
         env=None,
+        prepend_path=None,
         stateful=False,
         umask=None,
         output_loglevel='debug',
@@ -674,11 +667,8 @@ def run(name,
         The current working directory to execute the command in, defaults to
         /root
 
-    user
+    runas
         The user name to run the command as
-
-    group
-        The group context to run the command as
 
     shell
         The shell to use for execution, defaults to the shell grain
@@ -700,8 +690,7 @@ def run(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -723,6 +712,12 @@ def run(name,
                 - name: ls -l /
                 - env:
                   - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
+
+    prepend_path
+        $PATH segment to prepend (trailing ':' not necessary) to $PATH. This is
+        an easier alternative to the Jinja workaround.
+
+        .. versionadded:: Oxygen
 
     stateful
         The command being executed is expected to return data about executing
@@ -753,7 +748,7 @@ def run(name,
         .. versionadded:: 2015.8.0
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
@@ -761,6 +756,12 @@ def run(name,
         Use VT utils (saltstack) to stream the command output more
         interactively to the console and the logs.
         This is experimental.
+
+    bg
+        If ``True``, run command in background and do not await or deliver it's
+        results.
+
+        .. versionadded:: 2016.3.6
 
     .. note::
 
@@ -782,10 +783,10 @@ def run(name,
                 - reload_modules: True
 
     '''
-    ### NOTE: The keyword arguments in **kwargs are ignored in this state, but
-    ###       cannot be removed from the function definition, otherwise the use
-    ###       of unsupported arguments in a cmd.run state will result in a
-    ###       traceback.
+    ### NOTE: The keyword arguments in **kwargs are passed directly to the
+    ###       ``cmd.run_all`` function and cannot be removed from the function
+    ###       definition, otherwise the use of unsupported arguments in a
+    ###       ``cmd.run`` state will result in a traceback.
 
     test_name = None
     if not isinstance(stateful, list):
@@ -800,13 +801,6 @@ def run(name,
            'result': False,
            'comment': ''}
 
-    if cwd and not os.path.isdir(cwd):
-        ret['comment'] = (
-            'Desired working directory "{0}" '
-            'is not available'
-        ).format(cwd)
-        return ret
-
     # Need the check for None here, if env is not provided then it falls back
     # to None and it is assumed that the environment is not being overridden.
     if env is not None and not isinstance(env, (list, dict)):
@@ -814,58 +808,59 @@ def run(name,
                           'documentation.')
         return ret
 
-    if HAS_GRP:
-        pgid = os.getegid()
+    cmd_kwargs = copy.deepcopy(kwargs)
+    cmd_kwargs.update({'cwd': cwd,
+                       'runas': runas,
+                       'use_vt': use_vt,
+                       'shell': shell or __grains__['shell'],
+                       'env': env,
+                       'prepend_path': prepend_path,
+                       'umask': umask,
+                       'output_loglevel': output_loglevel,
+                       'quiet': quiet})
 
-    cmd_kwargs = {'cwd': cwd,
-                  'runas': user,
-                  'use_vt': use_vt,
-                  'shell': shell or __grains__['shell'],
-                  'env': env,
-                  'umask': umask,
-                  'output_loglevel': output_loglevel,
-                  'quiet': quiet}
-
-    try:
-        cret = mod_run_check(cmd_kwargs, onlyif, unless, group, creates)
-        if isinstance(cret, dict):
-            ret.update(cret)
-            return ret
-
-        if __opts__['test'] and not test_name:
-            ret['result'] = None
-            ret['comment'] = 'Command "{0}" would have been executed'.format(name)
-            return _reinterpreted_state(ret) if stateful else ret
-
-        # Wow, we passed the test, run this sucker!
-        try:
-            cmd_all = __salt__['cmd.run_all'](
-                name, timeout=timeout, python_shell=True, **cmd_kwargs
-            )
-        except CommandExecutionError as err:
-            ret['comment'] = str(err)
-            return ret
-
-        ret['changes'] = cmd_all
-        ret['result'] = not bool(cmd_all['retcode'])
-        ret['comment'] = 'Command "{0}" run'.format(name)
-
-        # Ignore timeout errors if asked (for nohups) and treat cmd as a success
-        if ignore_timeout:
-            trigger = 'Timed out after'
-            if ret['changes'].get('retcode') == 1 and trigger in ret['changes'].get('stdout'):
-                ret['changes']['retcode'] = 0
-                ret['result'] = True
-
-        if stateful:
-            ret = _reinterpreted_state(ret)
-        if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
-            ret['result'] = None
+    cret = mod_run_check(cmd_kwargs, onlyif, unless, creates)
+    if isinstance(cret, dict):
+        ret.update(cret)
         return ret
 
-    finally:
-        if HAS_GRP:
-            os.setegid(pgid)
+    if __opts__['test'] and not test_name:
+        ret['result'] = None
+        ret['comment'] = 'Command "{0}" would have been executed'.format(name)
+        return _reinterpreted_state(ret) if stateful else ret
+
+    if cwd and not os.path.isdir(cwd):
+        ret['comment'] = (
+            'Desired working directory "{0}" '
+            'is not available'
+        ).format(cwd)
+        return ret
+
+    # Wow, we passed the test, run this sucker!
+    try:
+        cmd_all = __salt__['cmd.run_all'](
+            name, timeout=timeout, python_shell=True, **cmd_kwargs
+        )
+    except CommandExecutionError as err:
+        ret['comment'] = str(err)
+        return ret
+
+    ret['changes'] = cmd_all
+    ret['result'] = not bool(cmd_all['retcode'])
+    ret['comment'] = u'Command "{0}" run'.format(name)
+
+    # Ignore timeout errors if asked (for nohups) and treat cmd as a success
+    if ignore_timeout:
+        trigger = 'Timed out after'
+        if ret['changes'].get('retcode') == 1 and trigger in ret['changes'].get('stdout'):
+            ret['changes']['retcode'] = 0
+            ret['result'] = True
+
+    if stateful:
+        ret = _reinterpreted_state(ret)
+    if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
+        ret['result'] = None
+    return ret
 
 
 def script(name,
@@ -875,8 +870,7 @@ def script(name,
            unless=None,
            creates=None,
            cwd=None,
-           user=None,
-           group=None,
+           runas=None,
            shell=None,
            env=None,
            stateful=False,
@@ -916,11 +910,8 @@ def script(name,
         The current working directory to execute the command in, defaults to
         /root
 
-    user
+    runas
         The name of the user to run the command as
-
-    group
-        The group context to run the command as
 
     shell
         The shell to use for execution. The default is set in grains['shell']
@@ -942,8 +933,7 @@ def script(name,
             **no**, **on**, **off**, **true**, and **false** are all loaded as
             boolean ``True`` and ``False`` values, and must be enclosed in
             quotes to be used as strings. More info on this (and other) PyYAML
-            idiosyncrasies can be found :doc:`here
-            </topics/troubleshooting/yaml_idiosyncrasies>`.
+            idiosyncrasies can be found :ref:`here <yaml-idiosyncrasies>`.
 
         Variables as values are not evaluated. So $PATH in the following
         example is a literal '$PATH':
@@ -966,6 +956,9 @@ def script(name,
                 - env:
                   - PATH: {{ [current_path, '/my/special/bin']|join(':') }}
 
+    saltenv : ``base``
+        The Salt environment to use
+
     umask
          The umask (in octal) to use when running the command.
 
@@ -984,7 +977,7 @@ def script(name,
         'arg two' arg3"
 
     creates
-        Only run if the file specified by ``creates`` does not exist.
+        Only run if the file or files specified by ``creates`` do not exist.
 
         .. versionadded:: 2014.7.0
 
@@ -994,12 +987,12 @@ def script(name,
         This is experimental.
 
     context
-        .. versionadded:: Boron
+        .. versionadded:: 2016.3.0
 
         Overrides default context variables passed to the template.
 
     defaults
-        .. versionadded:: Boron
+        .. versionadded:: 2016.3.0
 
         Default context passed to the template.
 
@@ -1022,13 +1015,6 @@ def script(name,
            'result': False,
            'comment': ''}
 
-    if cwd and not os.path.isdir(cwd):
-        ret['comment'] = (
-            'Desired working directory "{0}" '
-            'is not available'
-        ).format(cwd)
-        return ret
-
     # Need the check for None here, if env is not provided then it falls back
     # to None and it is assumed that the environment is not being overridden.
     if env is not None and not isinstance(env, (list, dict)):
@@ -1049,17 +1035,12 @@ def script(name,
     if context:
         tmpctx.update(context)
 
-    if HAS_GRP:
-        pgid = os.getegid()
-
     cmd_kwargs = copy.deepcopy(kwargs)
-    cmd_kwargs.update({'runas': user,
+    cmd_kwargs.update({'runas': runas,
                        'shell': shell or __grains__['shell'],
                        'env': env,
                        'onlyif': onlyif,
                        'unless': unless,
-                       'user': user,
-                       'group': group,
                        'cwd': cwd,
                        'template': template,
                        'umask': umask,
@@ -1071,7 +1052,7 @@ def script(name,
 
     run_check_cmd_kwargs = {
         'cwd': cwd,
-        'runas': user,
+        'runas': runas,
         'shell': shell or __grains__['shell']
     }
 
@@ -1080,49 +1061,51 @@ def script(name,
         source = name
 
     # If script args present split from name and define args
-    if len(name.split()) > 1:
+    if not cmd_kwargs.get('args', None) and len(name.split()) > 1:
         cmd_kwargs.update({'args': name.split(' ', 1)[1]})
 
-    try:
-        cret = mod_run_check(
-            run_check_cmd_kwargs, onlyif, unless, group, creates
-        )
-        if isinstance(cret, dict):
-            ret.update(cret)
-            return ret
-
-        if __opts__['test'] and not test_name:
-            ret['result'] = None
-            ret['comment'] = 'Command {0!r} would have been ' \
-                             'executed'.format(name)
-            return _reinterpreted_state(ret) if stateful else ret
-
-        # Wow, we passed the test, run this sucker!
-        try:
-            cmd_all = __salt__['cmd.script'](source, python_shell=True, **cmd_kwargs)
-        except (CommandExecutionError, SaltRenderError, IOError) as err:
-            ret['comment'] = str(err)
-            return ret
-
-        ret['changes'] = cmd_all
-        if kwargs.get('retcode', False):
-            ret['result'] = not bool(cmd_all)
-        else:
-            ret['result'] = not bool(cmd_all['retcode'])
-        if ret.get('changes', {}).get('cache_error'):
-            ret['comment'] = 'Unable to cache script {0} from saltenv ' \
-                             '{1!r}'.format(source, __env__)
-        else:
-            ret['comment'] = 'Command {0!r} run'.format(name)
-        if stateful:
-            ret = _reinterpreted_state(ret)
-        if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
-            ret['result'] = None
+    cret = mod_run_check(
+        run_check_cmd_kwargs, onlyif, unless, creates
+    )
+    if isinstance(cret, dict):
+        ret.update(cret)
         return ret
 
-    finally:
-        if HAS_GRP:
-            os.setegid(pgid)
+    if __opts__['test'] and not test_name:
+        ret['result'] = None
+        ret['comment'] = 'Command \'{0}\' would have been ' \
+                         'executed'.format(name)
+        return _reinterpreted_state(ret) if stateful else ret
+
+    if cwd and not os.path.isdir(cwd):
+        ret['comment'] = (
+            'Desired working directory "{0}" '
+            'is not available'
+        ).format(cwd)
+        return ret
+
+    # Wow, we passed the test, run this sucker!
+    try:
+        cmd_all = __salt__['cmd.script'](source, python_shell=True, **cmd_kwargs)
+    except (CommandExecutionError, SaltRenderError, IOError) as err:
+        ret['comment'] = str(err)
+        return ret
+
+    ret['changes'] = cmd_all
+    if kwargs.get('retcode', False):
+        ret['result'] = not bool(cmd_all)
+    else:
+        ret['result'] = not bool(cmd_all['retcode'])
+    if ret.get('changes', {}).get('cache_error'):
+        ret['comment'] = 'Unable to cache script {0} from saltenv ' \
+                         '\'{1}\''.format(source, __env__)
+    else:
+        ret['comment'] = 'Command \'{0}\' run'.format(name)
+    if stateful:
+        ret = _reinterpreted_state(ret)
+    if __opts__['test'] and cmd_all['retcode'] == 0 and ret['changes']:
+        ret['result'] = None
+    return ret
 
 
 def call(name,
@@ -1179,16 +1162,12 @@ def call(name,
                   'use_vt': use_vt,
                   'output_loglevel': output_loglevel,
                   'umask': kwargs.get('umask')}
-    if HAS_GRP:
-        pgid = os.getegid()
-    try:
-        cret = mod_run_check(cmd_kwargs, onlyif, unless, None, creates)
-        if isinstance(cret, dict):
-            ret.update(cret)
-            return ret
-    finally:
-        if HAS_GRP:
-            os.setegid(pgid)
+
+    cret = mod_run_check(cmd_kwargs, onlyif, unless, creates)
+    if isinstance(cret, dict):
+        ret.update(cret)
+        return ret
+
     if not kws:
         kws = {}
     result = func(*args, **kws)

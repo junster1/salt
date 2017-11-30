@@ -5,7 +5,7 @@ Management of iptables
 
 This is an iptables-specific module designed to manage Linux firewalls. It is
 expected that this state module, and other system-specific firewall states, may
-at some point be deprecated in favor of a more generic `firewall` state.
+at some point be deprecated in favor of a more generic ``firewall`` state.
 
 .. code-block:: yaml
 
@@ -194,7 +194,6 @@ at some point be deprecated in favor of a more generic `firewall` state.
 from __future__ import absolute_import
 
 # Import salt libs
-import salt.utils
 from salt.state import STATE_INTERNAL_KEYWORDS as _STATE_INTERNAL_KEYWORDS
 
 
@@ -314,7 +313,7 @@ def append(name, table='filter', family='ipv4', **kwargs):
     '''
     .. versionadded:: 0.17.0
 
-    Append a rule to a chain
+    Add a rule to the end of the specified chain.
 
     name
         A user-defined name to call this rule by in another part of a state or
@@ -453,6 +452,10 @@ def insert(name, table='filter', family='ipv4', **kwargs):
 
     family
         Networking family, either ipv4 or ipv6
+
+    position
+        The numerical representation of where the rule should be inserted into
+        the chain. Note that ``-1`` is not a supported position value.
 
     All other arguments are passed in with the same name as the long option
     that would normally be used for iptables, with one exception: ``--state`` is
@@ -770,9 +773,6 @@ def flush(name, table='filter', family='ipv4', **kwargs):
         if ignore in kwargs:
             del kwargs[ignore]
 
-    if 'table' not in kwargs:
-        table = 'filter'
-
     if 'chain' not in kwargs:
         kwargs['chain'] = ''
     if __opts__['test']:
@@ -809,7 +809,7 @@ def mod_aggregate(low, chunks, running):
     if low.get('fun') not in agg_enabled:
         return low
     for chunk in chunks:
-        tag = salt.utils.gen_state_tag(chunk)
+        tag = __utils__['state.gen_tag'](chunk)
         if tag in running:
             # Already ran the iptables state, skip aggregation
             continue

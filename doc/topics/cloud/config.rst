@@ -1,3 +1,5 @@
+.. _salt-cloud-config:
+
 ==================
 Core Configuration
 ==================
@@ -39,11 +41,44 @@ be used here.
 In particular, this is the location to specify the location of the salt master
 and its listening port, if the port is not set to the default.
 
+Similar to most other settings, Minion configuration settings are inherited
+across configuration files. For example, the master setting might be contained
+in the main ``cloud`` configuration file as demonstrated above, but additional
+settings can be placed in the provider or profile:
+
+.. code-block:: yaml
+
+    ec2-web:
+      size: t1.micro
+      minion:
+        environment: test
+        startup_states: sls
+        sls_list:
+          - web
+
+
+When salt cloud creates a new minon, it can automatically add grain information
+to the minion configuration file identifying the sources originally used
+to define it.
+
+The generated grain information will appear similar to:
+
+.. code-block:: yaml
+
+    grains:
+      salt-cloud:
+        driver: ec2
+        provider: my_ec2:ec2
+        profile: ec2-web
+
+The generation of the salt-cloud grain can be surpressed by the
+option ``enable_cloud_grains: 'False'`` in the cloud configuration file.
 
 Cloud Configuration Syntax
 ==========================
 
-The data specific to interacting with public clouds is set up here.
+The data specific to interacting with public clouds is set up :ref:`here
+<cloud-provider-specifics>`.
 
 Cloud provider configuration settings can live in several places. The first is in
 ``/etc/salt/cloud``:
@@ -80,7 +115,7 @@ Using the example configuration above:
 
 .. note::
 
-    Salt Cloud provider configurations within ``/etc/cloud.provider.d/ should not
+    Salt Cloud provider configurations within ``/etc/cloud.provider.d/`` should not
     specify the ``providers`` starting key.
 
 It is also possible to have multiple cloud configuration blocks within the same alias block.
@@ -354,7 +389,6 @@ both.
       compute_name: cloudServersOpenStack
       protocol: ipv4
       compute_region: DFW
-      protocol: ipv4
       user: myuser
       tenant: 5555555
       password: mypass
@@ -410,7 +444,7 @@ under the API Access tab.
 .. code-block:: yaml
 
     my-digitalocean-config:
-      driver: digital_ocean
+      driver: digitalocean
       personal_access_token: xxx
       location: New York 1
 
@@ -505,6 +539,17 @@ machine, virtual or bare metal, using SSH. This driver is useful for provisionin
 machines which are already installed, but not Salted. For more information about using
 this driver and for configuration examples, please see the
 :ref:`Gettting Started with Saltify <getting-started-with-saltify>` documentation.
+
+.. _config_vagrant:
+
+Vagrant
+-------
+
+The Vagrant driver is a new, experimental driver for controlling a VagrantBox
+virtual machine, and installing Salt on it. The target host machine must be a
+working salt minion, which is controlled via the salt master using salt-api.
+For more information, see
+:ref:`Getting Started With Vagrant <getting-started-with-vagrant>`.
 
 
 Extending Profiles and Cloud Providers Configuration

@@ -14,7 +14,7 @@ The Azure cloud module is used to control access to Microsoft Azure
     * ``apikey``
     * ``certificate_path``
     * ``subscription_id``
-    * ``requests_lib``
+    * ``backend``
 
     A Management Certificate (.pem and .crt files) must be created and the .pem
     file placed on the same machine that salt-cloud is run from. Information on
@@ -23,7 +23,7 @@ The Azure cloud module is used to control access to Microsoft Azure
 
     http://www.windowsazure.com/en-us/develop/python/how-to-guides/service-management/
 
-    For users with Python < 2.7.9, requests_lib must currently be set to True.
+    For users with Python < 2.7.9, ``backend`` must currently be set to ``requests``.
 
 Example ``/etc/salt/cloud.providers`` or
 ``/etc/salt/cloud.providers.d/azure.conf`` configuration:
@@ -52,6 +52,7 @@ from salt.exceptions import SaltCloudSystemExit
 import salt.utils.cloud
 
 # Import 3rd-party libs
+from salt.ext import six
 HAS_LIBS = False
 try:
     import azure
@@ -221,9 +222,9 @@ def list_nodes(conn=None, call=None):
     ret = {}
     nodes = list_nodes_full(conn, call)
     for node in nodes:
-        ret[node] = {}
-        for prop in ('id', 'image', 'name', 'size', 'state', 'private_ips', 'public_ips'):
-            ret[node][prop] = nodes[node][prop]
+        ret[node] = {'name': node}
+        for prop in ('id', 'image', 'size', 'state', 'private_ips', 'public_ips'):
+            ret[node][prop] = nodes[node].get(prop)
     return ret
 
 
@@ -399,7 +400,12 @@ def show_instance(name, call=None):
     # Find under which cloud service the name is listed, if any
     if name not in nodes:
         return {}
-    salt.utils.cloud.cache_node(nodes[name], __active_provider_name__, __opts__)
+    if 'name' not in nodes[name]:
+        nodes[name]['name'] = nodes[name]['id']
+    try:
+        __utils__['cloud.cache_node'](nodes[name], __active_provider_name__, __opts__)
+    except TypeError:
+        log.warning('Unable to show cache node data; this may be because the node has been deleted')
     return nodes[name]
 
 
@@ -411,25 +417,18 @@ def create(vm_):
         # Check for required profile parameters before sending any API calls.
         if vm_['profile'] and config.is_profile_configured(__opts__,
                                                            __active_provider_name__ or 'azure',
-                                                           vm_['profile']) is False:
+                                                           vm_['profile'],
+                                                           vm_=vm_) is False:
             return False
     except AttributeError:
         pass
 
-    # Since using "provider: <provider-engine>" is deprecated, alias provider
-    # to use driver: "driver: <provider-engine>"
-    if 'provider' in vm_:
-        vm_['driver'] = vm_.pop('provider')
-
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'starting create',
         'salt/cloud/{0}/creating'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('creating', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -461,13 +460,13 @@ def create(vm_):
         )
 
     ssh_port = config.get_cloud_config_value('port', vm_, __opts__,
-                                             default='22', search_global=True)
+                                             default=22, search_global=True)
 
     ssh_endpoint = azure.servicemanagement.ConfigurationSetInputEndpoint(
         name='SSH',
         protocol='TCP',
         port=ssh_port,
-        local_port='22',
+        local_port=22,
     )
 
     network_config = azure.servicemanagement.ConfigurationSet()
@@ -536,11 +535,12 @@ def create(vm_):
     del event_kwargs['vm_kwargs']['system_config']
     del event_kwargs['vm_kwargs']['os_virtual_hard_disk']
     del event_kwargs['vm_kwargs']['network_config']
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'requesting instance',
         'salt/cloud/{0}/requesting'.format(vm_['name']),
-        event_kwargs,
+        args=__utils__['cloud.filter_event']('requesting', event_kwargs, list(event_kwargs)),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
     log.debug('vm_kwargs: {0}'.format(vm_kwargs))
@@ -584,6 +584,7 @@ def create(vm_):
         # Deleting two useless keywords
         del vm_kwargs['deployment_slot']
         del vm_kwargs['label']
+        del vm_kwargs['virtual_network_name']
         result = conn.add_role(**vm_kwargs)
         _wait_for_async(conn, result.request_id)
     except Exception as exc:
@@ -643,18 +644,19 @@ def create(vm_):
     vm_['password'] = config.get_cloud_config_value(
         'ssh_password', vm_, __opts__
     )
-    ret = salt.utils.cloud.bootstrap(vm_, __opts__)
+    ret = __utils__['cloud.bootstrap'](vm_, __opts__)
 
     # Attaching volumes
     volumes = config.get_cloud_config_value(
         'volumes', vm_, __opts__, search_global=True
     )
     if volumes:
-        salt.utils.cloud.fire_event(
+        __utils__['cloud.fire_event'](
             'event',
             'attaching volumes',
             'salt/cloud/{0}/attaching_volumes'.format(vm_['name']),
-            {'volumes': volumes},
+            args=__utils__['cloud.filter_event']('attaching_volumes', vm_, ['volumes']),
+            sock_dir=__opts__['sock_dir'],
             transport=__opts__['transport']
         )
 
@@ -683,15 +685,12 @@ def create(vm_):
 
     ret.update(data)
 
-    salt.utils.cloud.fire_event(
+    __utils__['cloud.fire_event'](
         'event',
         'created instance',
         'salt/cloud/{0}/created'.format(vm_['name']),
-        {
-            'name': vm_['name'],
-            'profile': vm_['profile'],
-            'provider': vm_['driver'],
-        },
+        args=__utils__['cloud.filter_event']('created', vm_, ['name', 'profile', 'provider', 'driver']),
+        sock_dir=__opts__['sock_dir'],
         transport=__opts__['transport']
     )
 
@@ -711,7 +710,7 @@ def create_attach_volumes(name, kwargs, call=None, wait_to_finish=True):
     if kwargs is None:
         kwargs = {}
 
-    if isinstance(kwargs['volumes'], str):
+    if isinstance(kwargs['volumes'], six.string_types):
         volumes = yaml.safe_load(kwargs['volumes'])
     else:
         volumes = kwargs['volumes']
@@ -805,7 +804,7 @@ def create_attach_volumes(name, kwargs, call=None, wait_to_finish=True):
     if kwargs is None:
         kwargs = {}
 
-    if isinstance(kwargs['volumes'], str):
+    if isinstance(kwargs['volumes'], six.string_types):
         volumes = yaml.safe_load(kwargs['volumes'])
     else:
         volumes = kwargs['volumes']
@@ -951,7 +950,7 @@ def destroy(name, conn=None, call=None, kwargs=None):
         delete_type: {'request_id': result.request_id},
     }
     if __opts__.get('update_cachedir', False) is True:
-        salt.utils.cloud.delete_minion_cachedir(name, __active_provider_name__.split(':')[0], __opts__)
+        __utils__['cloud.delete_minion_cachedir'](name, __active_provider_name__.split(':')[0], __opts__)
 
     cleanup_disks = config.get_cloud_config_value(
         'cleanup_disks',
@@ -1589,7 +1588,7 @@ def cleanup_unattached_disks(kwargs=None, conn=None, call=None):
     for disk in disks:
         if disks[disk]['attached_to'] is None:
             del_kwargs = {
-                'name': disks[disk]['name'][0],
+                'name': disks[disk]['name'],
                 'delete_vhd': kwargs.get('delete_vhd', False)
             }
             log.info('Deleting disk {name}, deleting VHD: {delete_vhd}'.format(**del_kwargs))
@@ -2048,11 +2047,14 @@ def list_input_endpoints(kwargs=None, conn=None, call=None):
     for item in data:
         if 'Role' not in item:
             continue
-        input_endpoint = item['Role']['ConfigurationSets']['ConfigurationSet']['InputEndpoints']['InputEndpoint']
-        if not isinstance(input_endpoint, list):
-            input_endpoint = [input_endpoint]
-        for endpoint in input_endpoint:
-            ret[endpoint['Name']] = endpoint
+        for role in item['Role']:
+            input_endpoint = role['ConfigurationSets']['ConfigurationSet'].get('InputEndpoints', {}).get('InputEndpoint')
+            if not input_endpoint:
+                continue
+            if not isinstance(input_endpoint, list):
+                input_endpoint = [input_endpoint]
+            for endpoint in input_endpoint:
+                ret[endpoint['Name']] = endpoint
     return ret
 
 
@@ -3383,8 +3385,8 @@ def query(path, method='GET', data=None, params=None, header_dict=None, decode=T
         search_global=False,
         default='management.core.windows.net'
     )
-    requests_lib = config.get_cloud_config_value(
-        'requests_lib',
+    backend = config.get_cloud_config_value(
+        'backend',
         get_configured_provider(), __opts__, search_global=False
     )
     url = 'https://{management_host}/{subscription_id}/{path}'.format(
@@ -3407,7 +3409,7 @@ def query(path, method='GET', data=None, params=None, header_dict=None, decode=T
         port=443,
         text=True,
         cert=certificate_path,
-        requests_lib=requests_lib,
+        backend=backend,
         decode=decode,
         decode_type='xml',
     )

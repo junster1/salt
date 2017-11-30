@@ -2,21 +2,23 @@
 '''
 Manage Apache Sites
 
-.. versionadded:: Boron
+.. versionadded:: 2016.3.0
 
 Enable and disable apache sites.
 
 .. code-block:: yaml
 
     Enable default site:
-        apache_site.enable:
-            - name: default
+      apache_site.enabled:
+        - name: default
 
     Disable default site:
-        apache_site.disable:
-            - name: default
+      apache_site.disabled:
+        - name: default
 '''
 from __future__ import absolute_import
+
+# Import salt libs
 from salt.ext.six import string_types
 
 
